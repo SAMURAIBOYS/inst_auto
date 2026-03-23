@@ -64,15 +64,22 @@ BITMAP_FONT: Dict[str, Sequence[str]] = {
 
 
 class ImageGenerator:
-    def __init__(self, output_dir: str | Path = "output") -> None:
+    def __init__(self, output_dir: str | Path = "output", archive_root: str | Path | None = None) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        if archive_root is None:
+            archive_root = self.output_dir.parent / "archive" if self.output_dir.name == "output" else self.output_dir / "archive"
+        self.archive_root = Path(archive_root)
+        self.archive_root.mkdir(parents=True, exist_ok=True)
 
     def generate(self, extraction: Dict[str, Any], caption: str = "") -> Dict[str, Any]:
         width, height = 1080, 1080
-        timestamp = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat()
         latest_path = self.output_dir / "latest.png"
-        unique_path = self.output_dir / f"post_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}.png"
+        archive_dir = self.archive_root / now.strftime("%Y%m%d")
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        unique_path = archive_dir / f"post_{now.strftime('%Y%m%dT%H%M%S%f')}.png"
         canvas = self._new_canvas(width, height, (181, 159, 166))
         self._paint_base_reference_layout(canvas)
         self._paint_optional_info_overlay(canvas, extraction)
@@ -82,6 +89,7 @@ class ImageGenerator:
         return {
             "path": str(unique_path),
             "latest_path": str(latest_path),
+            "archive_dir": str(archive_dir),
             "width": width,
             "height": height,
             "layout": "reference_layout",

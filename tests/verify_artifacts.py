@@ -25,6 +25,10 @@ def main() -> None:
     if (width, height) != (1080, 1080):
         raise SystemExit(f"latest.png has wrong size: {(width, height)}")
 
+    stray_history = sorted(path.name for path in output_dir.glob("post_*.png"))
+    if stray_history:
+        raise SystemExit(f"output directory still contains archived post images: {stray_history}")
+
     payload = json.loads((output_dir / "best_result.json").read_text(encoding="utf-8"))
     result = payload.get("result", {})
     latest_text = (output_dir / "latest.txt").read_text(encoding="utf-8")
