@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 logs/
 best_result.json
+output/
+ci_output/
+archive/
