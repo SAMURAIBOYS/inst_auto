@@ -3,3 +3,4 @@ __pycache__/
 logs/
 best_result.json
 output/
+ci_output/
