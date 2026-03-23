@@ -88,6 +88,21 @@ BITMAP_FONT: Dict[str, Sequence[str]] = {
     "速": ["01001000", "11111110", "01010000", "01111100", "01000100", "11101110", "00010000", "00000000"],
     "報": ["01001000", "11111110", "01001000", "01111100", "01010100", "11111110", "01010100", "00000000"],
     "意": ["11111110", "00100000", "11111110", "00000000", "11111110", "10010010", "01101100", "00000000"],
+
+    "キ": ["11111110", "00100000", "11111110", "00100000", "00111100", "00100010", "01000010", "00000000"],
+    "ョ": ["11111100", "00000100", "11111100", "00000100", "11111100", "00000000", "00000000", "00000000"],
+    "ウ": ["01111100", "00010000", "00000000", "01111100", "00000100", "00000100", "01111000", "00000000"],
+    "チ": ["11111110", "00100000", "00100000", "11111110", "00100000", "00100000", "00100000", "00000000"],
+    "ュ": ["00000000", "00000000", "11111100", "00000100", "00111100", "01000100", "00111100", "00000000"],
+    "モ": ["01111110", "00010000", "01111110", "00010000", "00010000", "10010000", "01100000", "00000000"],
+    "ク": ["01111100", "00000100", "00001000", "00010000", "00100000", "01000010", "10000010", "00000000"],
+    "ソ": ["10000010", "01000100", "00101000", "00010000", "00101000", "01000100", "10000010", "00000000"],
+    "ホ": ["00100000", "00100000", "11111110", "00100000", "01111100", "10101010", "00100000", "00000000"],
+    "イ": ["00010000", "00100000", "01000000", "00100000", "00100000", "00100000", "00100000", "00000000"],
+    "シ": ["10000000", "01000000", "00100000", "00010000", "00001000", "00000100", "11111000", "00000000"],
+    "ジ": ["10001000", "01000100", "00100010", "00010100", "00001000", "00000100", "11111000", "00000000"],
+    "カ": ["00010000", "11111110", "00010010", "00010100", "00011000", "00110100", "11000010", "00000000"],
+    "ン": ["10000000", "01000000", "00100000", "00010000", "00001000", "00000100", "11111000", "00000000"],
 }
 
 MOOD_PALETTE = {
@@ -167,7 +182,7 @@ class ImageGenerator:
         self._fill_rect(canvas, 62, 62, 1018, 220, (242, 180, 54))
         self._fill_rect(canvas, 90, 90, 990, 188, (239, 236, 232))
         self._fill_rect(canvas, 108, 104, 248, 130, palette["chip"])
-        self._draw_centered_text(canvas, (116, 108, 240, 126), "今日注目", (255, 255, 255), 2, 1)
+        self._draw_centered_text(canvas, (116, 108, 240, 126), "キョウ チュウモク", (255, 255, 255), 2, 1)
         lines = self._fit_lines(self._display_headline(extraction), (122, 138, 958, 178), max_scale=3, min_scale=2, max_lines=2)
         self._draw_lines_centered(canvas, (122, 138, 958, 178), lines, (29, 34, 41))
 
@@ -231,7 +246,7 @@ class ImageGenerator:
         self._fill_rect(canvas, 0, 950, 1080, 1038, (198, 36, 52), alpha=0.90)
         self._fill_rect(canvas, 0, 988, 1080, 1080, (246, 40, 57), alpha=0.95)
         self._fill_rect(canvas, 0, 950, 1080, 976, palette["accent"], alpha=0.35)
-        ticker = "速報 注意 速報 注意 速報 注意 速報 注意"
+        ticker = "ソクホウ チュウイ ソクホウ チュウイ ソクホウ チュウイ"
         self._draw_ticker(canvas, (20, 958, 1060, 1028), ticker, (255, 255, 255), 3, 2, offset=42)
 
     def sanitize_text(self, text: str) -> str:
@@ -253,37 +268,37 @@ class ImageGenerator:
         topic = self._display_topic(extraction)
         base = self._shorten_at_word_boundary(self.sanitize_text(extraction.get("headline") or extraction.get("article_title") or ""), 36)
         if person_name and person_name not in {"市場監視", "MARKET WATCH"}:
-            return f"今日注目 {person_name} {topic}"[:48]
+            return f"{person_name} {topic}"[:48]
         if base:
-            return f"今日注目 {base}"[:48]
-        return f"今日注目 {topic}"[:48]
+            return f"{base} {topic}"[:48]
+        return topic[:48]
 
     def _display_role(self, person: Dict[str, Any]) -> str:
         if person.get("avatar_mode") == "person":
-            return "注目人物"
-        return "注目人物不明"
+            return "チュウモク"
+        return "シジョウ カンシ"
 
     def _display_summary(self, person: Dict[str, Any]) -> str:
         if person.get("avatar_mode") == "person":
             name = self._safe_name(person.get("name", ""))
-            return self._shorten_at_word_boundary(f"{name} 市場 動向 監視中", 28)
-        return "市場 BTC 動向 監視中"
+            return self._shorten_at_word_boundary(f"{name} BTC シジョウ カンシ", 28)
+        return "BTC シジョウ カンシ"
 
     def _display_topic(self, extraction: Dict[str, Any]) -> str:
         coins = extraction.get("coins") or []
         if coins:
-            return f"{str(coins[0]).upper()} 注目"
-        return "BTC 注目"
+            return f"{str(coins[0]).upper()} チュウモク"
+        return "BTC チュウモク"
 
     def _display_claim_summary(self, text: str) -> str:
         cleaned = self._shorten_at_word_boundary(self.sanitize_text(text), 32)
         if not cleaned:
             return ""
-        return f"市場 注目 {cleaned}"[:40]
+        return f"BTC シジョウ {cleaned}"[:40]
 
     def _safe_name(self, text: str) -> str:
         text = (text or "").strip()
-        return text[:26] if text else "市場監視"
+        return text[:26] if text else "シジョウ カンシ"
 
     def _shorten_at_word_boundary(self, text: str, max_chars: int) -> str:
         text = self.sanitize_text(text)
