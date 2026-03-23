@@ -16,13 +16,12 @@ def _configure_stdio_for_utf8() -> None:
             try:
                 reconfigure(encoding="utf-8", errors="backslashreplace")
             except ValueError:
-                # Some redirected streams may reject reconfiguration; keep the existing stream.
                 pass
 
 
 def main() -> None:
     _configure_stdio_for_utf8()
-    parser = argparse.ArgumentParser(description="Generate a buzz-ready crypto caption and image from the latest news.")
+    parser = argparse.ArgumentParser(description="Generate a crypto social post from real news with resilient fallbacks.")
     parser.add_argument("--output-dir", type=Path, default=Path("output"), help="Directory to write latest.png, latest.txt, and best_result.json.")
     args = parser.parse_args()
 
@@ -33,23 +32,25 @@ def main() -> None:
     article = artifacts.get("article", {})
     person = extraction.get("person", {})
     market = extraction.get("market") or article.get("market", {})
-    result.update({
-        "person": {
-            "name": person.get("name", ""),
-            "role": person.get("role", ""),
-            "summary": person.get("summary", ""),
-        },
+
+    payload = {
+        **result,
+        "person": {"name": person.get("name", ""), "role": person.get("role", ""), "summary": person.get("summary", "")},
         "article": {
             "title": article.get("title", ""),
             "summary": article.get("summary", ""),
+            "url": article.get("url", ""),
+            "source": article.get("source", ""),
+            "published_at": article.get("published_at", ""),
+            "image_url": article.get("image_url", ""),
         },
         "market": {
             "btc_price": market.get("btc_price"),
             "btc_change_percent": market.get("btc_change_percent"),
             "btc_direction": market.get("btc_direction"),
         },
-    })
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

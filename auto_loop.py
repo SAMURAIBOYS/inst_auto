@@ -64,98 +64,73 @@ class AutoImprovementLoop:
         run_errors: List[str] = []
         fetched = self.fetcher.fetch_latest()
         article = fetched.article
+        article_count = getattr(fetched, 'article_count', 1)
+        print(f"[ニュース取得] モード: {fetched.mode} / 件数: {article_count}")
+        print(f"[採用記事] {article.get('title', '')}")
+        for error in fetched.errors:
+            print(f"[取得エラー] {error}")
+
+        extraction = self.extractor.extract(article)
+        print("[抽出結果]", json.dumps({k: extraction.get(k) for k in ('topic', 'summary_ja', 'people', 'organizations', 'coins', 'sentiment', 'market_impact', 'claim_summary', 'is_crypto_related')}, ensure_ascii=False))
+        print(f"[正規化 people] {extraction.get('people', [])}")
+        print(f"[正規化 coins] {extraction.get('coins', [])}")
+
         best_artifacts: PipelineArtifacts | None = None
         best_score = -1.0
         history: List[Dict[str, Any]] = []
-        extraction = self.extractor.extract(article)
 
         for attempt in range(1, self.max_attempts + 1):
             improvements: List[str] = []
             skipped_regeneration = False
             try:
                 pre_score = self.scorer.score(article, extraction).to_dict()
-                if not pre_score.get("should_generate", True):
-                    skipped_regeneration = True
-                    improvements.append("score below threshold -> skipped retry loop for this attempt")
-                if attempt > 1 or skipped_regeneration:
+                if attempt > 1:
                     extraction, improve_changes = self.improver.improve(extraction, pre_score)
                     improvements.extend(improve_changes)
-
                 extraction["article_title"] = article.get("title", "")
                 extraction["article_summary"] = article.get("summary", "")
                 extraction["market"] = article.get("market", extraction.get("market", {}))
                 caption = self.caption_generator.generate(article, extraction)
+                print(f"[キャプション] {caption.replace(chr(10), ' / ')}")
                 image = self.image_generator.generate(extraction, caption=caption)
+                print(f"[画像保存] latest={image.get('latest_path')} archive={image.get('path')}")
                 final_score = self.scorer.score(article, extraction, image=image).to_dict()
-                artifacts = PipelineArtifacts(
-                    article=article,
-                    extraction=extraction,
-                    caption=caption,
-                    image=image,
-                    fetch_mode=fetched.mode,
-                    fetch_errors=fetched.errors + run_errors,
-                    score=final_score,
-                    improvements=improvements,
-                    skipped_regeneration=skipped_regeneration,
-                )
+                artifacts = PipelineArtifacts(article, extraction, caption, image, fetched.mode, fetched.errors + run_errors, final_score, improvements, skipped_regeneration)
             except Exception as exc:  # noqa: BLE001
                 run_errors.append(f"attempt_{attempt}_failed: {exc}")
                 run_errors.append(traceback.format_exc(limit=2))
+                print(f"[エラー] attempt_{attempt}: {exc}")
                 caption = self._fallback_caption(article)
-                image = self.image_generator.generate({
-                    "topic": "CRYPTO ALERT",
-                    "headline": article.get("title", "CRYPTO ALERT"),
-                    "person": {"name": "Market Watch", "role": "Fallback Avatar", "summary": "主要人物が不明なため市場アバターを表示。", "avatar_mode": "fallback"},
-                    "people": ["Satoshi Nakamoto"],
+                fallback_extraction = {
+                    "topic": "仮想通貨ニュース",
+                    "headline": article.get("title", "Crypto News"),
+                    "person": {"name": "Market Watch", "role": "Fallback Avatar", "summary": "人物を安全に特定できないため代替レイアウトを使用します。", "avatar_mode": "fallback"},
+                    "people": [],
                     "organizations": [],
-                    "coins": ["Bitcoin"],
+                    "coins": ["BTC"],
                     "sentiment": "neutral",
-                    "claim_summary": article.get("title", "Fallback summary"),
+                    "claim_summary": article.get("summary", "") or article.get("title", ""),
                     "image_hint": "fallback image",
                     "article_title": article.get("title", ""),
                     "article_summary": article.get("summary", ""),
                     "market": article.get("market", {}),
-                }, caption=caption)
-                artifacts = PipelineArtifacts(
-                    article=article,
-                    extraction=extraction,
-                    caption=caption,
-                    image=image,
-                    fetch_mode=fetched.mode,
-                    fetch_errors=fetched.errors + run_errors,
-                    score={"total_score": 0.0, "should_generate": True, "diagnostics": {}},
-                    improvements=["exception fallback executed"],
-                    skipped_regeneration=False,
-                )
+                }
+                image = self.image_generator.generate(fallback_extraction, caption=caption)
+                artifacts = PipelineArtifacts(article, fallback_extraction, caption, image, fetched.mode, fetched.errors + run_errors, {"total_score": 0.0, "should_generate": True, "diagnostics": {}}, ["exception fallback executed"], False)
 
-            record = {
-                "attempt": attempt,
-                "generated_at": self._timestamp(),
-                "result": artifacts.to_dict(),
-            }
-            history.append(record)
-            self._write_json(self.logs_dir / f"attempt_{attempt:02d}.json", record)
-
+            history.append({"attempt": attempt, "generated_at": self._timestamp(), "result": artifacts.to_dict()})
+            self._write_json(self.logs_dir / f"attempt_{attempt:02d}.json", history[-1])
             attempt_score = float(artifacts.score.get("total_score", 0.0))
             if attempt_score > best_score:
                 best_score = attempt_score
                 best_artifacts = artifacts
-
-            if artifacts.score.get("should_generate", True) and attempt_score >= 0.6:
+            if attempt_score >= 0.6:
                 break
-
-            extraction, improve_changes = self.improver.improve(extraction, artifacts.score)
-            if best_artifacts:
-                best_artifacts.improvements.extend(change for change in improve_changes if change not in best_artifacts.improvements)
 
         assert best_artifacts is not None
         self._restore_latest_image(best_artifacts)
         self.latest_text_path.write_text(best_artifacts.caption, encoding="utf-8")
-        payload = {
-            "generated_at": self._timestamp(),
-            "result": best_artifacts.to_dict(),
-            "history_length": len(history),
-        }
+        payload = {"generated_at": self._timestamp(), "result": best_artifacts.to_dict(), "history_length": len(history)}
         archive_paths = self._archive_final_outputs(best_artifacts, payload)
         payload["archive"] = archive_paths
         self._write_json(self.best_result_path, payload)
@@ -170,7 +145,6 @@ class AutoImprovementLoop:
             "archive": archive_paths,
         }
 
-
     def _archive_final_outputs(self, artifacts: PipelineArtifacts, payload: Dict[str, Any]) -> Dict[str, str]:
         generated_at = artifacts.image.get("generated_at") or self._timestamp()
         try:
@@ -179,22 +153,19 @@ class AutoImprovementLoop:
             stamp = datetime.now(timezone.utc)
         archive_dir = self.archive_root / stamp.strftime("%Y%m%d")
         archive_dir.mkdir(parents=True, exist_ok=True)
-        caption_path = archive_dir / f"caption_{stamp.strftime('%Y%m%dT%H%M%S%f')}.txt"
-        result_path = archive_dir / f"result_{stamp.strftime('%Y%m%dT%H%M%S%f')}.json"
+        suffix = stamp.strftime("%Y%m%dT%H%M%S%f")
+        caption_path = archive_dir / f"caption_{suffix}.txt"
+        result_path = archive_dir / f"result_{suffix}.json"
         caption_path.write_text(artifacts.caption, encoding="utf-8")
         self._write_json(result_path, payload)
         artifacts.image["archive_dir"] = str(archive_dir)
-        return {
-            "image": artifacts.image.get("path", ""),
-            "caption": str(caption_path),
-            "result": str(result_path),
-        }
+        return {"image": artifacts.image.get("path", ""), "caption": str(caption_path), "result": str(result_path)}
 
     @staticmethod
     def _fallback_caption(article: Dict[str, Any]) -> str:
         source = article.get("source", "source")
         url = article.get("url", "")
-        return f"これヤバい⚠️\n速報を整理中\n{article.get('title', 'Crypto alert')}\n出典: {source} {url}\n※要約ベース。投資判断は自己責任。"
+        return f"仮想通貨ニュース\n記事内容を確認中です。\n{article.get('title', 'Crypto alert')}\n出典: {source} {url}\n※要約ベース。"
 
     @staticmethod
     def _write_json(path: Path, payload: Dict[str, Any]) -> None:

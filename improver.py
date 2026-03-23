@@ -26,11 +26,15 @@ class ImprovementEngine:
                     improved.setdefault("coins", []).append(coin)
                     changes.append(f"topic_score low -> reused prior high-performing coin context: {coin}")
 
-        if score.get("people_score", 0.0) < 0.7:
-            lead = previous_best.get("extraction", {}).get("people", ["Satoshi Nakamoto"])[0]
+        previous_people = previous_best.get("extraction", {}).get("people", [])
+        if score.get("people_score", 0.0) < 0.7 and improved.get("people") and previous_people:
+            lead = previous_people[0]
             if lead not in improved.get("people", []):
-                improved.setdefault("people", []).insert(0, lead)
-            changes.append(f"people_score low -> injected fallback lead person: {lead}")
+                improved.setdefault("people", []).append(lead)
+                changes.append(f"people_score low -> appended prior corroborating person: {lead}")
+        elif score.get("people_score", 0.0) < 0.7 and not improved.get("people"):
+            improved["image_hint"] += " 人物不在のため、人物画像は使わず市場レイアウトを維持する。"
+            changes.append("people_score low -> preserved no-person layout to avoid false face selection")
 
         if diagnostics.get("topic", {}).get("coin_count", 0) >= 2:
             improved["image_hint"] += " 複数コイン比較を視覚で出す。"
