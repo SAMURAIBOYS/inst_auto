@@ -8,11 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-
 Color = Tuple[int, int, int]
 Point = Tuple[int, int]
 TextBox = Tuple[int, int, int, int]
-
 
 BITMAP_FONT: Dict[str, Sequence[str]] = {
     "A": ["01110", "10001", "11111", "10001", "10001", "10001", "10001"],
@@ -61,7 +59,7 @@ BITMAP_FONT: Dict[str, Sequence[str]] = {
     "/": ["00001", "00010", "00100", "01000", "10000", "00000", "00000"],
     "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
     " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
-    "\u25bc": ["00000", "10001", "01010", "00100", "00000", "00000", "00000"],
+    "▼": ["00000", "10001", "01010", "00100", "00000", "00000", "00000"],
 }
 
 
@@ -75,7 +73,7 @@ class ImageGenerator:
         timestamp = datetime.now(timezone.utc).isoformat()
         latest_path = self.output_dir / "latest.png"
         unique_path = self.output_dir / f"post_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}.png"
-        canvas = self._new_canvas(width, height, (176, 155, 162))
+        canvas = self._new_canvas(width, height, (181, 159, 166))
         self._paint_base_reference_layout(canvas)
         self._paint_optional_info_overlay(canvas, extraction)
         png_bytes = self._encode_png(width, height, self._rows_from_canvas(canvas))
@@ -86,20 +84,20 @@ class ImageGenerator:
             "latest_path": str(latest_path),
             "width": width,
             "height": height,
-            "layout": "person_focus",
+            "layout": "reference_layout",
             "generated_at": timestamp,
-            "contrast": 0.95,
+            "contrast": 0.92,
             "font_size": 30,
-            "safe_margin": 0.09,
-            "text_density": 0.22,
-            "headline_chars": min(120, len(caption) or 96),
+            "safe_margin": 0.10,
+            "text_density": 0.12,
+            "headline_chars": min(48, len(caption) or 0),
             "overflow": False,
             "portrait_mode": "reference_silhouette",
         }
 
     def sanitize_text(self, text: str) -> str:
         sanitized = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
-        sanitized = sanitized.replace("EOF", "").replace("EMERGE", "")
+        sanitized = re.sub(r"\b(?:EOF|EMERGE|DECLARAT\w*)\b", "", sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
         return sanitized
 
@@ -115,88 +113,77 @@ class ImageGenerator:
     def fit_text_to_box(self, text: str, box: TextBox, max_scale: int, min_scale: int, spacing: int = 2) -> Tuple[str, int]:
         text = self.sanitize_text(text)
         max_width = box[2] - box[0]
+        max_height = box[3] - box[1]
         for scale in range(max_scale, min_scale - 1, -1):
             fitted = self.ellipsize_text(text, scale, max_width, spacing)
             width, height = self._measure_text(fitted, scale, spacing)
-            if width <= max_width and height <= (box[3] - box[1]):
+            if width <= max_width and height <= max_height:
                 return fitted, scale
         return self.ellipsize_text(text, min_scale, max_width, spacing), min_scale
 
     def _paint_base_reference_layout(self, canvas: List[List[Color]]) -> None:
-        self._fill_rect(canvas, 0, 0, 1080, 1080, (176, 155, 162))
-        self._fill_rect(canvas, 40, 40, 1040, 1040, (32, 39, 46))
-        self._fill_polygon(canvas, [(812, 0), (1080, 0), (1080, 112), (952, 240), (668, 240)], (176, 155, 162), alpha=0.58)
-        self._fill_polygon(canvas, [(840, 1080), (1080, 840), (1080, 1080)], (243, 40, 56), alpha=0.82)
-        self._fill_rect(canvas, 59, 58, 1020, 219, (242, 179, 51))
-        self._fill_rect(canvas, 89, 89, 990, 189, (239, 236, 232))
+        # background base
+        self._fill_rect(canvas, 0, 0, 1080, 1080, (183, 161, 168))
+        self._fill_rect(canvas, 40, 40, 1040, 1040, (31, 39, 45))
+        self._fill_rect(canvas, 0, 0, 40, 1080, (26, 33, 40))
+        self._fill_rect(canvas, 0, 0, 1080, 40, (26, 33, 40))
 
-        # left simple silhouette area
-        self._fill_rect(canvas, 89, 228, 500, 951, (39, 43, 60))
-        self._fill_circle(canvas, 294, 425, 119, (239, 211, 168))
-        self._fill_rect(canvas, 205, 520, 386, 541, (232, 234, 241))
-        self._fill_rect(canvas, 169, 540, 422, 621, (29, 36, 59))
-        self._fill_rect(canvas, 205, 620, 386, 842, (214, 218, 231))
+        # decorative shapes kept behind panels and weakened to match reference
+        self._fill_polygon(canvas, [(670, 0), (1080, 0), (1080, 428), (866, 638), (500, 638), (500, 225)], (181, 159, 166), alpha=0.92)
+        self._fill_polygon(canvas, [(0, 755), (0, 1080), (433, 1080), (560, 955), (560, 500)], (181, 159, 166), alpha=0.92)
+        self._fill_polygon(canvas, [(795, 1080), (1080, 795), (1080, 1080)], (246, 40, 57), alpha=0.95)
+        self._fill_polygon(canvas, [(930, 520), (1080, 370), (1080, 1080), (930, 1080)], (203, 34, 50), alpha=0.72)
 
-        # right BTC panel
-        self._fill_rect(canvas, 560, 228, 990, 951, (28, 22, 17))
-        self._fill_polygon(canvas, [(560, 951), (990, 951), (990, 521), (560, 951)], (34, 19, 18), alpha=0.42)
-        self._fill_rect(canvas, 640, 360, 902, 620, (255, 173, 35))
-        self._fill_circle(canvas, 771, 491, 120, (255, 198, 20))
-        self._draw_centered_text(canvas, (712, 455, 832, 520), "BTC", (86, 58, 0), 6, 5)
-        self._draw_centered_text(canvas, (620, 720, 760, 790), "BTC", (245, 245, 245), 6, 4)
+        # header with larger empty space, closer to reference
+        self._fill_rect(canvas, 60, 60, 1020, 188, (242, 180, 54))
+        self._fill_rect(canvas, 89, 89, 990, 157, (239, 236, 232))
 
-        # strong alert band
-        self._fill_rect(canvas, 120, 890, 960, 985, (215, 42, 42))
-        self._fill_rect(canvas, 0, 950, 1080, 1040, (187, 33, 53), alpha=0.94)
-        self._fill_rect(canvas, 0, 985, 1080, 1080, (243, 40, 56))
-        self._draw_centered_text(canvas, (160, 902, 430, 958), "ALERT", (255, 255, 255), 7, 4)
+        # left silhouette panel, larger and lower like reference
+        self._fill_rect(canvas, 89, 228, 500, 950, (38, 42, 61))
+        self._fill_circle(canvas, 295, 427, 120, (236, 205, 162))
+        self._fill_rect(canvas, 205, 520, 385, 542, (232, 235, 241))
+        self._fill_rect(canvas, 169, 539, 422, 621, (27, 35, 58))
+        self._fill_rect(canvas, 205, 620, 385, 840, (193, 198, 214))
+
+        # right BTC panel aligned to reference
+        self._fill_rect(canvas, 560, 228, 990, 950, (29, 23, 18))
+        self._fill_polygon(canvas, [(560, 950), (990, 950), (990, 520)], (38, 20, 18), alpha=0.55)
+        self._fill_rect(canvas, 640, 360, 902, 620, (255, 175, 32))
+        self._fill_circle(canvas, 771, 490, 120, (255, 199, 22))
+        self._draw_centered_text(canvas, (713, 455, 829, 520), "BTC", (88, 58, 0), 6, 5)
+        self._draw_centered_text(canvas, (620, 720, 770, 792), "BTC", (244, 244, 244), 7, 4)
+
+        # alert band closer to reference: one main translucent strip and stronger bottom strip
+        self._fill_rect(canvas, 120, 890, 960, 985, (216, 42, 42), alpha=0.95)
+        self._fill_rect(canvas, 0, 950, 1080, 1040, (198, 36, 52), alpha=0.90)
+        self._fill_rect(canvas, 0, 985, 1080, 1080, (246, 40, 57), alpha=0.96)
+        self._draw_centered_text(canvas, (158, 906, 434, 960), "ALERT", (255, 255, 255), 7, 4)
 
     def _paint_optional_info_overlay(self, canvas: List[List[Color]], extraction: Dict[str, Any]) -> None:
-        person_name = self.sanitize_text((extraction.get("people") or [""])[0])
-        headline = self.sanitize_text(extraction.get("topic", ""))
-        profile = self.sanitize_text("ARK INVEST CEO. BITCOIN BULL. TARGET: $1,500,000 BTC.")
-        price_text = "$68,214.05"
-        change_text = "\u25bc1.6% (24H)"
         overlay_mode = extraction.get("overlay_mode", "minimal")
-
         if overlay_mode != "expanded":
             return
 
-        if self._can_show_short_header(headline):
-            self._fill_rect(canvas, 200, 98, 871, 188, (244, 244, 244))
-            self._draw_flag(canvas, 209, 101, 32, 22)
-            self._draw_centered_text(canvas, (250, 112, 840, 146), headline, (28, 30, 37), 3, 2)
+        headline = self.sanitize_text(extraction.get("topic", ""))
+        person_name = self.sanitize_text((extraction.get("people") or [""])[0])
+        price_text = "$68,214.05"
+        change_text = "▼1.6% (24H)"
 
-        if self._can_show_name_overlay(person_name):
-            name_box = (221, 560, 372, 602)
-            self._fill_rect(canvas, *name_box, (244, 244, 242))
-            self._draw_centered_text(canvas, name_box, person_name, (31, 33, 40), 3, 1)
+        if headline:
+            header_box = (110, 102, 960, 146)
+            fitted, scale = self.fit_text_to_box(headline, header_box, max_scale=3, min_scale=2, spacing=2)
+            self._draw_text(canvas, header_box[0], header_box[1], fitted, (30, 33, 40), scale=scale, spacing=2)
 
-        if self._can_show_profile_overlay(profile):
-            profile_box = (205, 620, 385, 770)
-            title_box = (profile_box[0] + 12, profile_box[1] + 18, profile_box[2] - 12, profile_box[1] + 48)
-            body_box = (profile_box[0] + 12, profile_box[1] + 72, profile_box[2] - 12, profile_box[3] - 18)
-            self._draw_centered_text(canvas, title_box, person_name or "CATHIE WOOD", (28, 30, 37), 2, 1)
-            self._draw_centered_text(canvas, body_box, self.ellipsize_text(profile, 2, body_box[2] - body_box[0], 1), (28, 30, 37), 2, 1)
+        if person_name and self._measure_text(person_name, 3, 1)[0] <= 160:
+            name_box = (188, 560, 404, 598)
+            self._fill_rect(canvas, *name_box, (243, 243, 241))
+            self._draw_centered_text(canvas, name_box, person_name, (32, 34, 40), 3, 1)
 
-        if self._can_show_price_overlay(price_text, change_text):
-            price_box = (600, 714, 902, 782)
-            self._fill_rect(canvas, *price_box, (251, 251, 249))
-            self._draw_centered_text(canvas, (613, 722, 760, 757), price_text, (25, 36, 65), 4, 1)
-            self._draw_centered_text(canvas, (765, 727, 875, 752), change_text, (255, 56, 44), 2, 1)
-            self._draw_info_circle(canvas, 886, 738)
-
-    def _can_show_short_header(self, headline: str) -> bool:
-        return bool(headline) and self._measure_text(headline, 3, 2)[0] <= 560
-
-    def _can_show_name_overlay(self, name: str) -> bool:
-        return bool(name) and self._measure_text(name, 3, 1)[0] <= 140
-
-    def _can_show_profile_overlay(self, profile: str) -> bool:
-        return bool(profile) and self._measure_text(self.ellipsize_text(profile, 2, 156, 1), 2, 1)[0] <= 156
-
-    def _can_show_price_overlay(self, price_text: str, change_text: str) -> bool:
-        return self._measure_text(price_text, 4, 1)[0] <= 147 and self._measure_text(change_text, 2, 1)[0] <= 110
+        if self._measure_text(price_text, 4, 1)[0] <= 180 and self._measure_text(change_text, 2, 1)[0] <= 100:
+            price_box = (700, 820, 954, 900)
+            self._fill_rect(canvas, *price_box, (249, 249, 247))
+            self._draw_text(canvas, 720, 836, price_text, (28, 40, 66), scale=4, spacing=1)
+            self._draw_text(canvas, 792, 872, change_text, (255, 58, 44), scale=2, spacing=1)
 
     def _draw_centered_text(self, canvas: List[List[Color]], box: TextBox, text: str, color: Color, max_scale: int, spacing: int) -> None:
         fitted, scale = self.fit_text_to_box(text, box, max_scale=max_scale, min_scale=max(2, max_scale - 2), spacing=spacing)
@@ -213,22 +200,6 @@ class ImageGenerator:
             glyph = BITMAP_FONT.get(char.upper() if char.isalpha() else char, BITMAP_FONT[" "])
             width += len(glyph[0]) * scale + spacing
         return max(0, width - spacing), len(BITMAP_FONT["A"]) * scale
-
-    def _draw_flag(self, canvas: List[List[Color]], x: int, y: int, width: int, height: int) -> None:
-        stripe_height = max(1, height // 7)
-        for stripe in range(7):
-            color = (191, 55, 72) if stripe % 2 == 0 else (244, 244, 244)
-            self._fill_rect(canvas, x, y + stripe * stripe_height, x + width, y + (stripe + 1) * stripe_height, color)
-        self._fill_rect(canvas, x, y, x + width // 2, y + stripe_height * 4, (33, 40, 97))
-        for star_y in range(2):
-            for star_x in range(3):
-                self._fill_rect(canvas, x + 3 + star_x * 4, y + 3 + star_y * 6, x + 5 + star_x * 4, y + 5 + star_y * 6, (255, 255, 255))
-
-    def _draw_info_circle(self, canvas: List[List[Color]], cx: int, cy: int) -> None:
-        self._fill_circle(canvas, cx, cy, 6, (219, 226, 234))
-        self._fill_circle(canvas, cx, cy, 5, (251, 251, 249))
-        self._fill_rect(canvas, cx - 1, cy - 1, cx + 1, cy + 3, (38, 80, 160))
-        self._fill_rect(canvas, cx - 1, cy - 3, cx + 1, cy - 2, (38, 80, 160))
 
     def _draw_text(self, canvas: List[List[Color]], x: int, y: int, text: str, color: Color, scale: int = 4, spacing: int = 2) -> None:
         cursor_x = x
@@ -255,7 +226,10 @@ class ImageGenerator:
         x_max = len(canvas[0])
         for y in range(y_min, y_max):
             dy = y - cy
-            span = int((radius * radius - dy * dy) ** 0.5)
+            span_sq = radius * radius - dy * dy
+            if span_sq < 0:
+                continue
+            span = int(span_sq ** 0.5)
             x1 = max(0, cx - span)
             x2 = min(x_max, cx + span)
             for x in range(x1, x2):
