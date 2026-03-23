@@ -1,0 +1,60 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pipeline-smoke:
+    name: pipeline-smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install optional dependency files
+        run: python tests/optional_pip_install.py
+
+      - name: Run main pipeline
+        run: python main.py --output-dir ci_output
+
+      - name: Verify generated artifacts
+        run: python tests/verify_artifacts.py ci_output
+
+  regression-guards:
+    name: regression-guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install optional dependency files
+        run: python tests/optional_pip_install.py
+
+      - name: Run regression guards
+        run: python -m unittest -v tests.test_ci_guards
