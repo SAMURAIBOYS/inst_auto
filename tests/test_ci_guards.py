@@ -9,6 +9,7 @@ from pathlib import Path
 
 from auto_loop import AutoImprovementLoop
 from generate_caption import CaptionGenerator
+from generate_image import ImageGenerator
 
 
 class CaptionGuardTests(unittest.TestCase):
@@ -114,3 +115,29 @@ class ImageLayoutGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DynamicImageVariationTests(unittest.TestCase):
+    def test_distinct_news_inputs_produce_distinct_pngs(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="insta_auto_variation_"))
+        self.addCleanup(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
+        generator = ImageGenerator(output_dir=temp_dir)
+
+        bullish = {
+            "headline": "Cathie Wood backs Bitcoin again",
+            "topic": "Bitcoin関連ニュース",
+            "claim_summary": "Cathie Wood says institutional demand keeps building.",
+            "person": {"name": "Cathie Wood", "role": "ARK Invest CEO", "summary": "Bitcoinに強気な見方を示した投資家", "avatar_mode": "person"},
+            "market": {"btc_price": 70488.12, "btc_change_percent": 2.4, "btc_direction": "up"},
+        }
+        bearish = {
+            "headline": "ETF outflows pressure Bitcoin price",
+            "topic": "ETF関連ニュース",
+            "claim_summary": "Market participants turn defensive as BTC momentum fades.",
+            "person": {"name": "Market Watch", "role": "Fallback Avatar", "summary": "主要人物が不明なため市場アバターを表示", "avatar_mode": "fallback"},
+            "market": {"btc_price": 68214.05, "btc_change_percent": -1.6, "btc_direction": "down"},
+        }
+
+        bullish_path = Path(generator.generate(bullish)["path"])
+        bearish_path = Path(generator.generate(bearish)["path"])
+        self.assertNotEqual(hashlib.sha256(bullish_path.read_bytes()).hexdigest(), hashlib.sha256(bearish_path.read_bytes()).hexdigest())
