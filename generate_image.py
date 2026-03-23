@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import binascii
-import math
+import re
 import struct
 import zlib
 from datetime import datetime, timezone
@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 Color = Tuple[int, int, int]
 Point = Tuple[int, int]
+TextBox = Tuple[int, int, int, int]
 
 
 BITMAP_FONT: Dict[str, Sequence[str]] = {
@@ -58,6 +59,7 @@ BITMAP_FONT: Dict[str, Sequence[str]] = {
     "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
     ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
     "/": ["00001", "00010", "00100", "01000", "10000", "00000", "00000"],
+    "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
     " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
     "\u25bc": ["00000", "10001", "01010", "00100", "00000", "00000", "00000"],
 }
@@ -90,13 +92,75 @@ class ImageGenerator:
             "layout": "person_focus",
             "generated_at": timestamp,
             "contrast": 0.97,
-            "font_size": 44,
-            "safe_margin": 0.055,
-            "text_density": 0.41,
+            "font_size": 38,
+            "safe_margin": 0.075,
+            "text_density": 0.34,
             "headline_chars": min(120, len(caption) or 96),
             "overflow": False,
             "portrait_mode": "drawn_reference",
         }
+
+    def sanitize_text(self, text: str) -> str:
+        sanitized = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
+        sanitized = sanitized.replace("EOF", "").replace("EMERGE", "")
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        return sanitized
+
+    def ellipsize_text(self, text: str, scale: int, max_width: int, spacing: int = 2) -> str:
+        text = self.sanitize_text(text)
+        if self._measure_text(text, scale, spacing)[0] <= max_width:
+            return text
+        trimmed = text
+        while trimmed and self._measure_text(trimmed + "...", scale, spacing)[0] > max_width:
+            trimmed = trimmed[:-1].rstrip()
+        return (trimmed + "...") if trimmed else "..."
+
+    def wrap_text_to_box(self, text: str, box: TextBox, scale: int, spacing: int = 2, max_lines: int = 2) -> List[str]:
+        text = self.sanitize_text(text)
+        max_width = box[2] - box[0]
+        words = text.split()
+        if not words:
+            return []
+        lines: List[str] = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if self._measure_text(candidate, scale, spacing)[0] <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+                if len(lines) == max_lines - 1:
+                    break
+        if len(lines) < max_lines:
+            lines.append(current)
+        remaining_words = words[len(" ".join(lines).split()):]
+        if remaining_words and lines:
+            lines[-1] = self.ellipsize_text(lines[-1] + " " + " ".join(remaining_words), scale, max_width, spacing)
+        return lines[:max_lines]
+
+    def fit_text_to_box(
+        self,
+        text: str,
+        box: TextBox,
+        max_scale: int,
+        min_scale: int,
+        spacing: int = 2,
+        max_lines: int = 2,
+    ) -> Tuple[List[str], int]:
+        for scale in range(max_scale, min_scale - 1, -1):
+            lines = self.wrap_text_to_box(text, box, scale, spacing=spacing, max_lines=max_lines)
+            if not lines:
+                return [], scale
+            line_width = max(self._measure_text(line, scale, spacing)[0] for line in lines)
+            line_height = len(BITMAP_FONT["A"]) * scale
+            total_height = (line_height * len(lines)) + (max(0, len(lines) - 1) * scale)
+            if line_width <= (box[2] - box[0]) and total_height <= (box[3] - box[1]):
+                return lines, scale
+        fallback = self.wrap_text_to_box(text, box, min_scale, spacing=spacing, max_lines=max_lines)
+        if fallback:
+            fallback[-1] = self.ellipsize_text(fallback[-1], min_scale, box[2] - box[0], spacing)
+        return fallback, min_scale
 
     def _paint_master_background(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 0, 0, 1080, 1080, (176, 155, 162))
@@ -110,12 +174,23 @@ class ImageGenerator:
     def _paint_header(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 59, 58, 1020, 219, (242, 179, 51))
         self._fill_rect(canvas, 89, 89, 990, 189, (239, 236, 232))
-        self._fill_rect(canvas, 200, 98, 871, 188, (244, 244, 244))
+        inner_box = (200, 98, 871, 188)
+        self._fill_rect(canvas, *inner_box, (244, 244, 244))
         self._draw_flag(canvas, 209, 101, 32, 22)
-        self._draw_text(canvas, 250, 103, "CATHIE WOOD URGES INVESTORS TO SELL", (28, 30, 37), scale=4, spacing=3)
-        self._draw_text(canvas, 210, 129, "GOLD FOR BITCOIN, SAYS BTC WILL HIT $1,500,000", (28, 30, 37), scale=4, spacing=2)
-        self._draw_text(canvas, 208, 165, "LET'S GO", (22, 24, 31), scale=4, spacing=3)
-        self._draw_flame(canvas, 335, 163)
+        headline_box = (250, 103, 854, 153)
+        lines, scale = self.fit_text_to_box(
+            "CATHIE WOOD URGES INVESTORS TO SELL GOLD FOR BITCOIN, SAYS BTC WILL HIT $1,500,000",
+            headline_box,
+            max_scale=4,
+            min_scale=2,
+            spacing=2,
+            max_lines=2,
+        )
+        self._draw_lines_in_box(canvas, headline_box, lines, (28, 30, 37), scale, spacing=2, line_gap=max(3, scale))
+        sub_box = (208, 160, 380, 182)
+        sub_lines, sub_scale = self.fit_text_to_box("LET'S GO", sub_box, max_scale=4, min_scale=3, spacing=3, max_lines=1)
+        self._draw_lines_in_box(canvas, sub_box, sub_lines, (22, 24, 31), sub_scale, spacing=3, line_gap=0)
+        self._draw_flame(canvas, 334, 160)
 
     def _paint_left_panel(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 89, 260, 499, 951, (39, 43, 60))
@@ -124,29 +199,87 @@ class ImageGenerator:
         self._draw_cathie_portrait(canvas, 298, 440, 82)
         self._fill_rect(canvas, 205, 520, 385, 541, (232, 234, 241))
         self._fill_rect(canvas, 169, 540, 423, 621, (29, 36, 59))
-        self._fill_rect(canvas, 221, 560, 372, 602, (244, 244, 242))
-        self._draw_text(canvas, 230, 571, "Cathie Wood", (31, 33, 40), scale=3, spacing=1, uppercase=False)
-        self._fill_rect(canvas, 205, 620, 383, 841, (214, 218, 231))
-        self._fill_rect(canvas, 109, 681, 498, 747, (248, 247, 242))
-        self._draw_bio_box(canvas)
-        self._draw_text(canvas, 139, 866, "EMERGE C   DECLARATI", (244, 244, 246), scale=4, spacing=4)
+        name_box = (221, 560, 372, 602)
+        self._fill_rect(canvas, *name_box, (244, 244, 242))
+        name_lines, name_scale = self.fit_text_to_box("CATHIE WOOD", name_box, max_scale=3, min_scale=2, spacing=1, max_lines=1)
+        self._draw_lines_in_box(canvas, name_box, name_lines, (31, 33, 40), name_scale, spacing=1, line_gap=0)
+        profile_box = (205, 620, 383, 770)
+        self._fill_rect(canvas, *profile_box, (214, 218, 231))
+        self._draw_profile_card(canvas, profile_box)
 
     def _paint_right_panel(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 560, 260, 990, 951, (28, 22, 17))
         self._fill_polygon(canvas, [(560, 949), (560, 520), (990, 520), (560, 949)], (34, 19, 18))
         self._fill_rect(canvas, 640, 360, 902, 620, (255, 173, 35))
         self._fill_circle(canvas, 771, 491, 120, (255, 198, 20))
-        self._draw_text(canvas, 714, 469, "BTC", (86, 58, 0), scale=6, spacing=5)
-        self._fill_rect(canvas, 601, 714, 887, 771, (251, 251, 249))
-        self._draw_text(canvas, 613, 722, "$68,214.05", (25, 36, 65), scale=5, spacing=1)
-        self._draw_text(canvas, 760, 730, "\u25bc1.6% (24H)", (255, 56, 44), scale=2, spacing=1)
-        self._draw_info_circle(canvas, 853, 740)
+        btc_box = (712, 455, 832, 520)
+        btc_lines, btc_scale = self.fit_text_to_box("BTC", btc_box, max_scale=6, min_scale=5, spacing=5, max_lines=1)
+        self._draw_lines_in_box(canvas, btc_box, btc_lines, (86, 58, 0), btc_scale, spacing=5, line_gap=0)
+
+        price_box = (600, 714, 902, 782)
+        self._fill_rect(canvas, *price_box, (251, 251, 249))
+        price_text_box = (613, 722, 760, 757)
+        price_lines, price_scale = self.fit_text_to_box("$68,214.05", price_text_box, max_scale=5, min_scale=3, spacing=1, max_lines=1)
+        self._draw_lines_in_box(canvas, price_text_box, price_lines, (25, 36, 65), price_scale, spacing=1, line_gap=0)
+        change_text_box = (765, 727, 875, 752)
+        change_lines, change_scale = self.fit_text_to_box("\u25bc1.6% (24H)", change_text_box, max_scale=2, min_scale=2, spacing=1, max_lines=1)
+        self._draw_lines_in_box(canvas, change_text_box, change_lines, (255, 56, 44), change_scale, spacing=1, line_gap=0)
+        self._draw_info_circle(canvas, 886, 738)
 
     def _paint_bottom_alert(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 120, 890, 960, 985, (215, 42, 42))
         self._fill_rect(canvas, 0, 950, 1080, 1040, (187, 33, 53), alpha=0.92)
         self._fill_rect(canvas, 0, 985, 1080, 1080, (243, 40, 56))
-        self._draw_text(canvas, 164, 913, "ALERT", (255, 255, 255), scale=7, spacing=4)
+        alert_box = (160, 903, 430, 958)
+        alert_lines, alert_scale = self.fit_text_to_box("ALERT", alert_box, max_scale=7, min_scale=6, spacing=4, max_lines=1)
+        self._draw_lines_in_box(canvas, alert_box, alert_lines, (255, 255, 255), alert_scale, spacing=4, line_gap=0)
+
+    def _draw_profile_card(self, canvas: List[List[Color]], box: TextBox) -> None:
+        title_box = (box[0] + 12, box[1] + 18, box[2] - 12, box[1] + 48)
+        profile_title = self.ellipsize_text("CATHIE WOOD", 2, title_box[2] - title_box[0], spacing=1)
+        self._draw_lines_in_box(canvas, title_box, [profile_title], (28, 30, 37), 2, spacing=1, line_gap=0)
+        body_box = (box[0] + 12, box[1] + 58, box[2] - 12, box[3] - 18)
+        body_lines, body_scale = self.fit_text_to_box(
+            "ARK INVEST CEO. BITCOIN BULL. TARGET: $1,500,000 BTC.",
+            body_box,
+            max_scale=2,
+            min_scale=2,
+            spacing=1,
+            max_lines=2,
+        )
+        self._draw_lines_in_box(canvas, body_box, body_lines, (28, 30, 37), body_scale, spacing=1, line_gap=5)
+
+    def _draw_lines_in_box(
+        self,
+        canvas: List[List[Color]],
+        box: TextBox,
+        lines: Sequence[str],
+        color: Color,
+        scale: int,
+        spacing: int,
+        line_gap: int,
+    ) -> None:
+        if not lines:
+            return
+        line_height = len(BITMAP_FONT["A"]) * scale
+        total_height = line_height * len(lines) + line_gap * max(0, len(lines) - 1)
+        y = box[1] + max(0, ((box[3] - box[1]) - total_height) // 2)
+        for line in lines:
+            width, _ = self._measure_text(line, scale, spacing)
+            x = box[0] + max(0, ((box[2] - box[0]) - width) // 2)
+            self._draw_text(canvas, x, y, line, color, scale=scale, spacing=spacing)
+            y += line_height + line_gap
+
+    def _measure_text(self, text: str, scale: int, spacing: int) -> Tuple[int, int]:
+        if not text:
+            return 0, 0
+        width = 0
+        for char in text:
+            glyph = BITMAP_FONT.get(char.upper() if char.isalpha() else char, BITMAP_FONT[" "])
+            width += len(glyph[0]) * scale + spacing
+        width = max(0, width - spacing)
+        height = len(BITMAP_FONT["A"]) * scale
+        return width, height
 
     def _draw_cathie_portrait(self, canvas: List[List[Color]], cx: int, cy: int, radius: int) -> None:
         self._fill_circle(canvas, cx, cy, radius, (221, 223, 228))
@@ -163,31 +296,6 @@ class ImageGenerator:
         self._fill_rect(canvas, 285, 438, 291, 463, (198, 180, 170))
         self._fill_rect(canvas, 271, 469, 308, 474, (171, 84, 110))
         self._fill_polygon(canvas, [(250, 498), (320, 498), (346, 518), (222, 518)], (215, 216, 230))
-
-    def _draw_bio_box(self, canvas: List[List[Color]]) -> None:
-        # Recreate the screenshot-like text panel rather than a generic paragraph.
-        black = (26, 26, 29)
-        blue = (62, 120, 255)
-        self._draw_mono_line(canvas, 111, 688, "Cathie Wood (Catherine D. Wood) ", black, scale=2)
-        self._draw_mono_line(canvas, 470, 688, "↵", blue, scale=2)
-        self._draw_mono_line(canvas, 111, 721, "40年以上の投資経験を持ち、2014年に", black, scale=2, raw_segments=True)
-        self._draw_mono_line(canvas, 482, 721, "↵", blue, scale=2)
-        self._draw_mono_line(canvas, 111, 743, "ARK Investを創業した同社の", black, scale=2, raw_segments=True)
-        self._draw_mono_line(canvas, 366, 743, "↵", blue, scale=2)
-        self._draw_mono_line(canvas, 111, 765, "創業者・CEO・CIOです。", black, scale=2, raw_segments=True)
-        self._fill_rect(canvas, 332, 747, 380, 769, (0, 0, 0))
-        self._draw_mono_line(canvas, 338, 751, "EOF", (59, 255, 245), scale=2)
-        self._draw_outline_rect(canvas, 109, 681, 498, 747, blue)
-
-    def _draw_mono_line(self, canvas: List[List[Color]], x: int, y: int, text: str, color: Color, scale: int = 2, raw_segments: bool = False) -> None:
-        if raw_segments:
-            # Faux-Japanese strokes to keep the same visual density even without CJK fonts.
-            cursor = x
-            for width in (42, 30, 48, 26, 36, 38, 28, 52, 20, 44):
-                self._fill_rect(canvas, cursor, y, cursor + width, y + 3, color)
-                cursor += width + 6
-            return
-        self._draw_text(canvas, x, y, text, color, scale=scale, spacing=1, uppercase=False)
 
     def _draw_flag(self, canvas: List[List[Color]], x: int, y: int, width: int, height: int) -> None:
         stripe_height = max(1, height // 7)
@@ -209,10 +317,10 @@ class ImageGenerator:
         self._fill_rect(canvas, cx - 1, cy - 1, cx + 1, cy + 3, (38, 80, 160))
         self._fill_rect(canvas, cx - 1, cy - 3, cx + 1, cy - 2, (38, 80, 160))
 
-    def _draw_text(self, canvas: List[List[Color]], x: int, y: int, text: str, color: Color, scale: int = 4, spacing: int = 2, uppercase: bool = True) -> None:
+    def _draw_text(self, canvas: List[List[Color]], x: int, y: int, text: str, color: Color, scale: int = 4, spacing: int = 2) -> None:
         cursor_x = x
         for char in text:
-            glyph_key = char.upper() if uppercase else char.upper() if char.isalpha() else char
+            glyph_key = char.upper() if char.isalpha() else char
             pattern = BITMAP_FONT.get(glyph_key, BITMAP_FONT[" "])
             for row_index, row in enumerate(pattern):
                 for col_index, bit in enumerate(row):
@@ -234,12 +342,6 @@ class ImageGenerator:
             row = canvas[y]
             for x in range(max(0, x1), min(max_width, x2)):
                 row[x] = self._blend(row[x], color, alpha)
-
-    def _draw_outline_rect(self, canvas: List[List[Color]], x1: int, y1: int, x2: int, y2: int, color: Color) -> None:
-        self._fill_rect(canvas, x1, y1, x2, y1 + 1, color)
-        self._fill_rect(canvas, x1, y2 - 1, x2, y2, color)
-        self._fill_rect(canvas, x1, y1, x1 + 1, y2, color)
-        self._fill_rect(canvas, x2 - 1, y1, x2, y2, color)
 
     def _fill_circle(self, canvas: List[List[Color]], cx: int, cy: int, radius: int, color: Color, alpha: float = 1.0) -> None:
         y_min = max(0, cy - radius)
