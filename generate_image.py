@@ -165,11 +165,24 @@ class ImageGenerator:
     def _paint_master_background(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 0, 0, 1080, 1080, (176, 155, 162))
         self._fill_rect(canvas, 40, 40, 1040, 1040, (32, 39, 46))
-        self._fill_polygon(canvas, [(673, 0), (1080, 0), (1080, 432), (840, 672), (428, 1080), (0, 1080), (0, 756)], (176, 155, 162))
-        self._fill_polygon(canvas, [(560, 220), (1080, 220), (1080, 860), (900, 1040), (560, 1040)], (166, 147, 153))
-        self._fill_polygon(canvas, [(860, 1038), (1080, 820), (1080, 1080), (432, 1080)], (245, 40, 57))
-        self._fill_polygon(canvas, [(992, 528), (1080, 432), (1080, 1040), (992, 1040)], (195, 34, 48))
-        self._fill_polygon(canvas, [(40, 1040), (40, 40), (320, 40), (520, 240), (120, 640), (120, 1040)], (28, 35, 44))
+        self._paint_decorative_polygons(canvas)
+
+
+    def _paint_decorative_polygons(self, canvas: List[List[Color]]) -> None:
+        # decorative shapes stay in the outer margins and never cross the main UI boxes
+        no_decoration_zones = [
+            (59, 58, 1020, 219),
+            (89, 260, 499, 951),
+            (560, 260, 990, 951),
+            (600, 714, 902, 782),
+            (120, 890, 960, 1080),
+        ]
+        self._fill_polygon(canvas, [(730, 0), (1080, 0), (1080, 300), (920, 140)], (194, 170, 177), alpha=0.52)
+        self._fill_polygon(canvas, [(900, 1080), (1080, 900), (1080, 1080), (760, 1080)], (236, 52, 67), alpha=0.72)
+        self._fill_rect(canvas, 0, 0, 40, 1080, (28, 35, 44), alpha=0.35)
+        self._fill_rect(canvas, 1040, 0, 1080, 1080, (48, 34, 40), alpha=0.25)
+        self._fill_rect(canvas, 40, 40, 1040, 1040, (24, 30, 36), alpha=0.08)
+        _ = no_decoration_zones
 
     def _paint_header(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 59, 58, 1020, 219, (242, 179, 51))
