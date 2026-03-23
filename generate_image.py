@@ -125,31 +125,31 @@ class ImageGenerator:
     def _paint_base_reference_layout(self, canvas: List[List[Color]]) -> None:
         self._fill_rect(canvas, 0, 0, 1080, 1080, (176, 155, 162))
         self._fill_rect(canvas, 40, 40, 1040, 1040, (32, 39, 46))
-        self._fill_polygon(canvas, [(720, 0), (1080, 0), (1080, 430), (804, 706), (432, 1080), (0, 1080), (0, 756)], (176, 155, 162), alpha=0.66)
-        self._fill_polygon(canvas, [(860, 1038), (1080, 818), (1080, 1080), (432, 1080)], (243, 40, 56), alpha=0.82)
+        self._fill_polygon(canvas, [(812, 0), (1080, 0), (1080, 112), (952, 240), (668, 240)], (176, 155, 162), alpha=0.58)
+        self._fill_polygon(canvas, [(840, 1080), (1080, 840), (1080, 1080)], (243, 40, 56), alpha=0.82)
         self._fill_rect(canvas, 59, 58, 1020, 219, (242, 179, 51))
         self._fill_rect(canvas, 89, 89, 990, 189, (239, 236, 232))
 
         # left simple silhouette area
-        self._fill_rect(canvas, 89, 260, 499, 951, (39, 43, 60))
-        self._fill_circle(canvas, 295, 426, 119, (239, 211, 168))
-        self._fill_rect(canvas, 205, 520, 385, 541, (232, 234, 241))
-        self._fill_rect(canvas, 169, 540, 423, 621, (29, 36, 59))
-        self._fill_rect(canvas, 205, 620, 385, 841, (214, 218, 231))
+        self._fill_rect(canvas, 89, 228, 500, 951, (39, 43, 60))
+        self._fill_circle(canvas, 294, 425, 119, (239, 211, 168))
+        self._fill_rect(canvas, 205, 520, 386, 541, (232, 234, 241))
+        self._fill_rect(canvas, 169, 540, 422, 621, (29, 36, 59))
+        self._fill_rect(canvas, 205, 620, 386, 842, (214, 218, 231))
 
         # right BTC panel
-        self._fill_rect(canvas, 560, 260, 990, 951, (28, 22, 17))
-        self._fill_polygon(canvas, [(560, 949), (560, 520), (990, 520), (560, 949)], (34, 19, 18), alpha=0.84)
+        self._fill_rect(canvas, 560, 228, 990, 951, (28, 22, 17))
+        self._fill_polygon(canvas, [(560, 951), (990, 951), (990, 521), (560, 951)], (34, 19, 18), alpha=0.42)
         self._fill_rect(canvas, 640, 360, 902, 620, (255, 173, 35))
         self._fill_circle(canvas, 771, 491, 120, (255, 198, 20))
         self._draw_centered_text(canvas, (712, 455, 832, 520), "BTC", (86, 58, 0), 6, 5)
-        self._draw_centered_text(canvas, (620, 706, 760, 780), "BTC", (245, 245, 245), 6, 4)
+        self._draw_centered_text(canvas, (620, 720, 760, 790), "BTC", (245, 245, 245), 6, 4)
 
         # strong alert band
         self._fill_rect(canvas, 120, 890, 960, 985, (215, 42, 42))
         self._fill_rect(canvas, 0, 950, 1080, 1040, (187, 33, 53), alpha=0.94)
         self._fill_rect(canvas, 0, 985, 1080, 1080, (243, 40, 56))
-        self._draw_centered_text(canvas, (160, 903, 430, 958), "ALERT", (255, 255, 255), 7, 4)
+        self._draw_centered_text(canvas, (160, 902, 430, 958), "ALERT", (255, 255, 255), 7, 4)
 
     def _paint_optional_info_overlay(self, canvas: List[List[Color]], extraction: Dict[str, Any]) -> None:
         person_name = self.sanitize_text((extraction.get("people") or [""])[0])
@@ -157,6 +157,10 @@ class ImageGenerator:
         profile = self.sanitize_text("ARK INVEST CEO. BITCOIN BULL. TARGET: $1,500,000 BTC.")
         price_text = "$68,214.05"
         change_text = "\u25bc1.6% (24H)"
+        overlay_mode = extraction.get("overlay_mode", "minimal")
+
+        if overlay_mode != "expanded":
+            return
 
         if self._can_show_short_header(headline):
             self._fill_rect(canvas, 200, 98, 871, 188, (244, 244, 244))
