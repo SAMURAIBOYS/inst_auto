@@ -102,9 +102,14 @@ class AutoImprovementLoop:
                 print(f"[エラー] attempt_{attempt}: {exc}")
                 caption = self._fallback_caption(article)
                 fallback_extraction = {
+                    "headline_ja": article.get("title", "仮想通貨ニュース"),
                     "topic": "仮想通貨ニュース",
                     "headline": article.get("title", "Crypto News"),
-                    "person": {"name": "Market Watch", "role": "Fallback Avatar", "summary": "人物を安全に特定できないため代替レイアウトを使用します。", "avatar_mode": "fallback"},
+                    "person_name": "",
+                    "person_role": "市場解説",
+                    "buy_signal": False,
+                    "buy_reason": "",
+                    "person": {"name": "Market Watch", "role": "市場解説", "summary": "人物を安全に特定できないため代替レイアウトを使用します。", "avatar_mode": "fallback"},
                     "people": [],
                     "organizations": [],
                     "coins": ["BTC"],

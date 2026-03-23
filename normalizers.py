@@ -30,13 +30,13 @@ NON_PERSON_TERMS = {
     "bitcoin", "btc", "xbt", "ethereum", "eth", "ether", "xrp", "sol", "solana", "doge", "dogecoin", "ada", "cardano",
     "blackrock", "grayscale", "coinbase", "binance", "metaplanet", "microstrategy", "strategy", "tesla", "fidelity", "ark", "ark invest",
     "sec", "fed", "fomc", "etf", "spot etf", "bitcoin etf", "ethereum etf", "ripple", "circle", "tether", "crypto", "cryptocurrency",
-    "market", "markets", "wall street", "us", "u.s.", "japan", "china", "europe", "nasdaq", "nyse",
+    "market", "markets", "wall street", "us", "u.s.", "japan", "china", "europe", "nasdaq", "nyse", "gold",
 }
 
 ORG_HINTS = (
     "inc", "corp", "corporation", "llc", "ltd", "plc", "group", "capital", "invest", "investments", "asset", "management",
     "holdings", "fund", "etf", "trust", "exchange", "commission", "agency", "department", "bank", "reserve", "foundation",
-    "labs", "protocol", "dao", "ventures", "partners", "university", "government", "ministry",
+    "labs", "protocol", "dao", "ventures", "partners", "university", "government", "ministry", "magazine", "news", "media",
 )
 
 STOPWORDS = {"the", "a", "an", "and", "of", "for", "to", "in", "on", "at"}
@@ -71,6 +71,27 @@ def looks_like_organization(text: str) -> bool:
     return any(hint in lowered for hint in ORG_HINTS)
 
 
+def is_probable_person_name(text: str) -> bool:
+    name = compact_whitespace(text)
+    if len(name) <= 2:
+        return False
+    if looks_like_ticker(name) or looks_like_organization(name):
+        return False
+    lowered = name.lower()
+    if lowered in NON_PERSON_TERMS:
+        return False
+    parts = [p for p in re.split(r"\s+", name) if p]
+    if not (1 <= len(parts) <= 4):
+        return False
+    if len(parts) == 1 and parts[0].lower() in STOPWORDS:
+        return False
+    if not any(ch.isalpha() for ch in name):
+        return False
+    if len(parts) == 1:
+        return parts[0][:1].isupper() and parts[0][1:].islower()
+    return all(part[:1].isupper() for part in parts if part)
+
+
 def normalize_people(values: Iterable[str] | None, organizations: Sequence[str] | None = None, text: str = "") -> List[str]:
     organizations_lower = {compact_whitespace(v).lower() for v in (organizations or []) if compact_whitespace(v)}
     normalized: List[str] = []
@@ -85,13 +106,9 @@ def normalize_people(values: Iterable[str] | None, organizations: Sequence[str] 
             continue
         if looks_like_organization(name):
             continue
+        if not is_probable_person_name(name):
+            continue
         parts = [p for p in re.split(r"\s+", name) if p]
-        if len(parts) == 1 and parts[0].lower() in STOPWORDS:
-            continue
-        if len(parts) > 4:
-            continue
-        if not any(ch.isalpha() for ch in name):
-            continue
         canonical = " ".join(part[:1].upper() + part[1:] if part.islower() else part for part in parts)
         if canonical.lower() in NON_PERSON_TERMS:
             continue
@@ -106,8 +123,6 @@ def normalize_organizations(values: Iterable[str] | None) -> List[str]:
         name = compact_whitespace(raw).strip("-–—:;,. ")
         if len(name) <= 1:
             continue
-        if name.lower() in NON_PERSON_TERMS and name.upper() not in {"SEC", "FED", "FOMC"}:
-            pass
         if name not in organizations:
             organizations.append(name)
     return organizations
