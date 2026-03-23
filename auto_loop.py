@@ -1,209 +1,200 @@
 from __future__ import annotations
 
 import json
-import random
-import time
-from copy import deepcopy
+import shutil
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
+from ai_extract import AIExtractor
+from generate_caption import CaptionGenerator
+from generate_image import ImageGenerator
 from improver import ImprovementEngine
+from news_fetcher import NewsFetcher
 from scoring import ScoringEngine
 
 
 @dataclass
-class GenerationResult:
+class PipelineArtifacts:
+    article: Dict[str, Any]
+    extraction: Dict[str, Any]
     caption: str
-    summary: str
-    people: List[str]
     image: Dict[str, Any]
-    prompt_used: str
+    fetch_mode: str
+    fetch_errors: List[str]
+    score: Dict[str, Any]
+    improvements: List[str]
+    skipped_regeneration: bool
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "article": self.article,
+            "extraction": self.extraction,
             "caption": self.caption,
-            "summary": self.summary,
-            "people": self.people,
             "image": self.image,
-            "prompt_used": self.prompt_used,
+            "fetch_mode": self.fetch_mode,
+            "fetch_errors": self.fetch_errors,
+            "score": self.score,
+            "improvements": self.improvements,
+            "skipped_regeneration": self.skipped_regeneration,
         }
-
-
-class APIError(RuntimeError):
-    pass
 
 
 class AutoImprovementLoop:
-    def __init__(
-        self,
-        output_dir: str | Path = ".",
-        max_attempts: int = 5,
-        retry_limit: int = 3,
-        seed: int = 7,
-    ) -> None:
+    def __init__(self, output_dir: str | Path = "output", max_attempts: int = 2) -> None:
         self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir = self.output_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.best_result_path = self.output_dir / "best_result.json"
-        self.max_attempts = max_attempts
-        self.retry_limit = retry_limit
-        self.random = random.Random(seed)
+        self.latest_text_path = self.output_dir / "latest.txt"
+        self.archive_root = self.output_dir.parent / "archive" if self.output_dir.name == "output" else self.output_dir / "archive"
+        self.archive_root.mkdir(parents=True, exist_ok=True)
+        self.fetcher = NewsFetcher(sample_path=self.output_dir / "sample_news.json")
+        self.extractor = AIExtractor()
+        self.caption_generator = CaptionGenerator()
+        self.image_generator = ImageGenerator(output_dir=self.output_dir, archive_root=self.archive_root)
         self.scorer = ScoringEngine()
-        self.improver = ImprovementEngine()
+        self.improver = ImprovementEngine(best_result_path=self.best_result_path)
+        self.max_attempts = max_attempts
 
-    def run(self, source: Dict[str, Any], initial_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        config = deepcopy(initial_config or self.default_config())
+    def run(self) -> Dict[str, Any]:
+        run_errors: List[str] = []
+        fetched = self.fetcher.fetch_latest()
+        article = fetched.article
+        best_artifacts: PipelineArtifacts | None = None
+        best_score = -1.0
         history: List[Dict[str, Any]] = []
-        best_record = self._load_best_result()
+        extraction = self.extractor.extract(article)
 
         for attempt in range(1, self.max_attempts + 1):
-            generation = self._with_retry(lambda: self.generate_candidate(source, config, attempt))
-            score = self.scorer.score(source, generation.to_dict()).to_dict()
+            improvements: List[str] = []
+            skipped_regeneration = False
+            try:
+                pre_score = self.scorer.score(article, extraction).to_dict()
+                if not pre_score.get("should_generate", True):
+                    skipped_regeneration = True
+                    improvements.append("score below threshold -> skipped retry loop for this attempt")
+                if attempt > 1 or skipped_regeneration:
+                    extraction, improve_changes = self.improver.improve(extraction, pre_score)
+                    improvements.extend(improve_changes)
+
+                extraction["article_title"] = article.get("title", "")
+                extraction["article_summary"] = article.get("summary", "")
+                extraction["market"] = article.get("market", extraction.get("market", {}))
+                caption = self.caption_generator.generate(article, extraction)
+                image = self.image_generator.generate(extraction, caption=caption)
+                final_score = self.scorer.score(article, extraction, image=image).to_dict()
+                artifacts = PipelineArtifacts(
+                    article=article,
+                    extraction=extraction,
+                    caption=caption,
+                    image=image,
+                    fetch_mode=fetched.mode,
+                    fetch_errors=fetched.errors + run_errors,
+                    score=final_score,
+                    improvements=improvements,
+                    skipped_regeneration=skipped_regeneration,
+                )
+            except Exception as exc:  # noqa: BLE001
+                run_errors.append(f"attempt_{attempt}_failed: {exc}")
+                run_errors.append(traceback.format_exc(limit=2))
+                caption = self._fallback_caption(article)
+                image = self.image_generator.generate({
+                    "topic": "CRYPTO ALERT",
+                    "headline": article.get("title", "CRYPTO ALERT"),
+                    "person": {"name": "Market Watch", "role": "Fallback Avatar", "summary": "主要人物が不明なため市場アバターを表示。", "avatar_mode": "fallback"},
+                    "people": ["Satoshi Nakamoto"],
+                    "organizations": [],
+                    "coins": ["Bitcoin"],
+                    "sentiment": "neutral",
+                    "claim_summary": article.get("title", "Fallback summary"),
+                    "image_hint": "fallback image",
+                    "article_title": article.get("title", ""),
+                    "article_summary": article.get("summary", ""),
+                    "market": article.get("market", {}),
+                }, caption=caption)
+                artifacts = PipelineArtifacts(
+                    article=article,
+                    extraction=extraction,
+                    caption=caption,
+                    image=image,
+                    fetch_mode=fetched.mode,
+                    fetch_errors=fetched.errors + run_errors,
+                    score={"total_score": 0.0, "should_generate": True, "diagnostics": {}},
+                    improvements=["exception fallback executed"],
+                    skipped_regeneration=False,
+                )
+
             record = {
                 "attempt": attempt,
-                "timestamp": self._timestamp(),
-                "config": deepcopy(config),
-                "generation": generation.to_dict(),
-                "score": score,
+                "generated_at": self._timestamp(),
+                "result": artifacts.to_dict(),
             }
             history.append(record)
-            self._write_attempt_log(record)
+            self._write_json(self.logs_dir / f"attempt_{attempt:02d}.json", record)
 
-            if self._is_better(score, best_record.get("score") if best_record else None):
-                best_record = record
-                self._write_json(self.best_result_path, best_record)
+            attempt_score = float(artifacts.score.get("total_score", 0.0))
+            if attempt_score > best_score:
+                best_score = attempt_score
+                best_artifacts = artifacts
 
-            if score["total_score"] >= config["thresholds"]["target_score"]:
-                best_record["status"] = "target_reached"
-                self._write_json(self.best_result_path, best_record)
+            if artifacts.score.get("should_generate", True) and attempt_score >= 0.6:
                 break
 
-            config, changes = self.improver.improve(config, score, history)
-            record["improvements_applied"] = changes
-            self._write_attempt_log(record)
-        else:
-            if best_record:
-                best_record["status"] = "max_attempts_reached"
-                self._write_json(self.best_result_path, best_record)
+            extraction, improve_changes = self.improver.improve(extraction, artifacts.score)
+            if best_artifacts:
+                best_artifacts.improvements.extend(change for change in improve_changes if change not in best_artifacts.improvements)
 
+        assert best_artifacts is not None
+        self._restore_latest_image(best_artifacts)
+        self.latest_text_path.write_text(best_artifacts.caption, encoding="utf-8")
+        payload = {
+            "generated_at": self._timestamp(),
+            "result": best_artifacts.to_dict(),
+            "history_length": len(history),
+        }
+        archive_paths = self._archive_final_outputs(best_artifacts, payload)
+        payload["archive"] = archive_paths
+        self._write_json(self.best_result_path, payload)
         return {
-            "best_result": best_record,
-            "history": history,
-            "attempt_count": len(history),
             "best_result_path": str(self.best_result_path),
-            "logs_dir": str(self.logs_dir),
+            "latest_text_path": str(self.latest_text_path),
+            "latest_image_path": best_artifacts.image.get("latest_path"),
+            "fetch_mode": fetched.mode,
+            "fetch_errors": fetched.errors + run_errors,
+            "result": best_artifacts.to_dict(),
+            "history_length": len(history),
+            "archive": archive_paths,
         }
 
-    def generate_candidate(self, source: Dict[str, Any], config: Dict[str, Any], attempt: int) -> GenerationResult:
-        self._simulate_possible_api_failure(attempt)
-        people = self._extract_people(source, config)
-        title = source.get("title", "Untitled")
-        summary = self._build_summary(source, people, config)
-        caption = f"{title} — {summary}"
-        image = self._render_layout(source, caption, config)
-        return GenerationResult(
-            caption=caption,
-            summary=summary,
-            people=people,
-            image=image,
-            prompt_used=config["prompt_template"],
-        )
 
-    def _extract_people(self, source: Dict[str, Any], config: Dict[str, Any]) -> List[str]:
-        provided_people = list(source.get("people", []))
-        if provided_people:
-            return provided_people
-
-        text = " ".join(filter(None, [source.get("title", ""), source.get("summary", "")]))
-        capitalized = []
-        tokens = text.replace("\n", " ").split()
-        current: List[str] = []
-        for token in tokens:
-            cleaned = token.strip(",.!?()[]{}\"'")
-            if cleaned[:1].isupper() and cleaned.lower() not in {"the", "a", "an", "in", "on", "and"}:
-                current.append(cleaned)
-            elif current:
-                if len(current) >= 2:
-                    capitalized.append(" ".join(current))
-                current = []
-        if current and len(current) >= 2:
-            capitalized.append(" ".join(current))
-
-        if capitalized:
-            return capitalized[:3]
-        if config["extraction"]["use_fallback"]:
-            return [source.get("fallback_person", "Unknown Person")]
-        return []
-
-    def _build_summary(self, source: Dict[str, Any], people: List[str], config: Dict[str, Any]) -> str:
-        base = source.get("summary") or source.get("title", "")
-        keywords = source.get("keywords", [])
-        keyword_text = ", ".join(keywords[:3]) if keywords else "key context"
-        people_text = ", ".join(people) if people else "the subject"
-        tone = config.get("tone", "concise")
-        improvement_count = config.get("meta", {}).get("improvement_count", 0)
-        if improvement_count >= 2:
-            base_excerpt = base[:108].rstrip(" ,.")
-            return (
-                f"{people_text} lead a {tone} update on {keyword_text}. "
-                f"Source-aligned takeaway: {base_excerpt}."
-            )
-        return (
-            f"{people_text} are featured in a {tone} recap focused on {keyword_text}. "
-            f"It stays aligned with the source: {base[:160].rstrip()}"
-        )
-
-    def _render_layout(self, source: Dict[str, Any], caption: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        layout = config["layout"]
-        width = layout["canvas_width"]
-        height = layout["canvas_height"]
-        font_size = layout["font_size"]
-        contrast = layout["contrast"]
-        safe_margin = layout["safe_margin"]
-        headline_chars = len(source.get("title", ""))
-        text_density = min(0.95, max(0.05, len(caption) / (width * height / 1800)))
-        overflow = (headline_chars > 110) or (text_density > 0.78)
+    def _archive_final_outputs(self, artifacts: PipelineArtifacts, payload: Dict[str, Any]) -> Dict[str, str]:
+        generated_at = artifacts.image.get("generated_at") or self._timestamp()
+        try:
+            stamp = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        except ValueError:
+            stamp = datetime.now(timezone.utc)
+        archive_dir = self.archive_root / stamp.strftime("%Y%m%d")
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        caption_path = archive_dir / f"caption_{stamp.strftime('%Y%m%dT%H%M%S%f')}.txt"
+        result_path = archive_dir / f"result_{stamp.strftime('%Y%m%dT%H%M%S%f')}.json"
+        caption_path.write_text(artifacts.caption, encoding="utf-8")
+        self._write_json(result_path, payload)
+        artifacts.image["archive_dir"] = str(archive_dir)
         return {
-            "width": width,
-            "height": height,
-            "font_size": font_size,
-            "contrast": round(contrast, 2),
-            "text_density": round((text_density + layout["text_density_target"]) / 2, 4),
-            "headline_chars": headline_chars,
-            "safe_margin": safe_margin,
-            "overflow": overflow,
+            "image": artifacts.image.get("path", ""),
+            "caption": str(caption_path),
+            "result": str(result_path),
         }
 
-    def _with_retry(self, operation):
-        last_error: Exception | None = None
-        for attempt in range(1, self.retry_limit + 1):
-            try:
-                return operation()
-            except APIError as exc:
-                last_error = exc
-                time.sleep(0.05 * attempt)
-        raise RuntimeError(f"generation failed after {self.retry_limit} retries") from last_error
-
-    def _simulate_possible_api_failure(self, attempt: int) -> None:
-        if attempt == 1 and self.random.random() < 0.15:
-            raise APIError("simulated transient API failure")
-
-    def _load_best_result(self) -> Optional[Dict[str, Any]]:
-        if not self.best_result_path.exists():
-            return None
-        with self.best_result_path.open("r", encoding="utf-8") as fp:
-            return json.load(fp)
-
-    def _is_better(self, score: Dict[str, Any], current_best_score: Optional[Dict[str, Any]]) -> bool:
-        if current_best_score is None:
-            return True
-        return score["total_score"] > current_best_score["total_score"]
-
-    def _write_attempt_log(self, payload: Dict[str, Any]) -> None:
-        filename = f"attempt_{payload['attempt']:02d}.json"
-        self._write_json(self.logs_dir / filename, payload)
+    @staticmethod
+    def _fallback_caption(article: Dict[str, Any]) -> str:
+        source = article.get("source", "source")
+        url = article.get("url", "")
+        return f"これヤバい⚠️\n速報を整理中\n{article.get('title', 'Crypto alert')}\n出典: {source} {url}\n※要約ベース。投資判断は自己責任。"
 
     @staticmethod
     def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -214,35 +205,12 @@ class AutoImprovementLoop:
     def _timestamp() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    @staticmethod
-    def default_config() -> Dict[str, Any]:
-        return {
-            "prompt_template": (
-                "Create a social post with an image concept and concise summary."
-                " Prioritize factual consistency, readability, and named person accuracy."
-            ),
-            "tone": "concise",
-            "layout": {
-                "canvas_width": 1080,
-                "canvas_height": 1080,
-                "font_size": 22,
-                "contrast": 0.74,
-                "text_density_target": 0.35,
-                "safe_margin": 0.06,
-            },
-            "extraction": {
-                "use_fallback": False,
-                "capitalized_name_bias": 0.55,
-            },
-            "thresholds": {
-                "retry_score": 0.72,
-                "target_score": 0.88,
-                "person_accuracy": 0.8,
-                "image_readability": 0.72,
-                "source_alignment": 0.68,
-            },
-            "meta": {
-                "improvement_count": 0,
-                "last_changes": [],
-            },
-        }
+    def _restore_latest_image(self, artifacts: PipelineArtifacts) -> None:
+        winning_image = Path(artifacts.image.get("path", ""))
+        latest_image = Path(artifacts.image.get("latest_path", self.output_dir / "latest.png"))
+        if not winning_image.exists():
+            return
+        latest_image.parent.mkdir(parents=True, exist_ok=True)
+        if winning_image.resolve() != latest_image.resolve():
+            shutil.copyfile(winning_image, latest_image)
+        artifacts.image["latest_path"] = str(latest_image)
