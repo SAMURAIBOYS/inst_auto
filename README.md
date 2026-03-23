@@ -1,150 +1,104 @@
-# 自動改善型 投稿AIループ
+# insta_auto
 
-このリポジトリは、**「1回で終わる生成スクリプト」ではなく、評価結果を使って自動で改善し続ける仕組み**を実装した最小構成のサンプルです。
+仮想通貨ニュースを元に、毎回更新される **投稿文 + 画像** を自動生成するスクリプトです。
 
-## 1. 設計説明
+## 実行
 
-### 目的
-以下の4段ループを完全自動で回し、放置しても精度が上がる投稿AIの基盤を提供します。
-
-1. 投稿生成（画像 + 文章）
-2. 評価（スコアリング）
-3. 改善（プロンプト / パラメータ調整 / 抽出フォールバック）
-4. 再生成
-
-### 設計方針
-- **再学習は禁止**という要件に合わせ、改善はすべて以下で行います。
-  - プロンプト最適化
-  - テンプレート改善
-  - 評価フィードバック反映
-- **自動ループ**は `AutoImprovementLoop` が担当し、最大試行回数で必ず停止します。
-- **評価**は `ScoringEngine` が担当し、5つの必須指標と総合スコアを算出します。
-- **改善**は `ImprovementEngine` が担当し、スコアに応じてプロンプト・レイアウト・人物抽出設定を更新します。
-- **安定性**として、例外処理・API失敗時リトライ・履歴保存・過去ベスト更新を含めています。
-
-### 自動改善サイクル
-```text
-source input
-  -> generate candidate post/image metadata
-  -> score candidate
-  -> compare with current best
-  -> persist logs + best_result.json
-  -> improve prompt/layout/extraction
-  -> regenerate until target score or max attempts
-```
-
-## 2. ファイル構成
-
-```text
-.
-├── auto_loop.py     # ループ制御、再試行、best_result/logs管理
-├── scoring.py       # 評価ロジック（数値化 + 総合スコア）
-├── improver.py      # 改善ロジック（プロンプト/パラメータ更新）
-├── main.py          # 単体実行エントリポイント
-├── README.md        # 設計・実行方法・改善メカニズム説明
-└── logs/            # 実行ごとの attempt_XX.json を保存
-```
-
-## 3. 実装コードの役割
-
-### `scoring.py`
-必須指標をすべて数値化します。
-
-- `person_accuracy`（0〜1）
-  - 期待される人物名と抽出結果の F1 ベース一致率
-- `summary_naturalness`（0〜1）
-  - 語彙の重複率、文長、句読点バランスから自然さを推定
-- `source_alignment`（0〜1）
-  - 元ネタと生成文のキーワード重なり・被覆率を評価
-- `image_readability`（0〜1）
-  - フォントサイズ、コントラスト、密度、アスペクト比などで可読性を評価
-- `layout_intact`（0 or 1）
-  - オーバーフロー、密度過多、余白不足などからレイアウト崩れを検出
-- `total_score`
-  - 上記を重み付きで統合した総合スコア
-
-### `improver.py`
-スコアに基づいて改善策を選択します。
-
-- 総合スコアが閾値未満
-  - 事実整合性を強めるプロンプトに修正
-- 画像品質が低い
-  - フォントサイズ、コントラスト、余白、文字密度を調整
-- 人物抽出が弱い
-  - フォールバック抽出を有効化し、人物名明示をプロンプトへ追加
-- 元ネタ一致度が低い
-  - ソースキーワードをプロンプトへ再注入
-- レイアウト崩れ検出
-  - キャンバス拡張と密度低減を実施
-
-### `auto_loop.py`
-改善ループの本体です。
-
-- 最大試行回数による**無限ループ防止**
-- API失敗を想定した**リトライ**
-- 各試行を `logs/attempt_XX.json` に保存
-- より高いスコアが出た場合のみ `best_result.json` を更新
-- 目標スコア到達で早期停止
-
-### `main.py`
-CLI から単体実行できます。
-
-- デフォルトのサンプルソースを内蔵
-- `--source` で JSON 入力を差し替え可能
-- `--output-dir` で保存先を変更可能
-
-## 4. 実行方法
-
-### 必要環境
-- Python 3.10+
-
-### サンプル実行
 ```bash
-python3 main.py --output-dir .
+python main.py
 ```
 
-### 外部ソース JSON 例
-```json
-{
-  "title": "Grace Hopper drives reliable software culture",
-  "summary": "A story about reliability, debugging discipline, and practical automation.",
-  "people": ["Grace Hopper"],
-  "keywords": ["reliability", "debugging", "automation"]
-}
-```
+実行すると次を更新します。
 
-実行後に以下が出力されます。
-- `best_result.json`
-- `logs/attempt_01.json`, `logs/attempt_02.json`, ...
+- `output/latest.png`
+- `output/latest.txt`
+- `output/best_result.json`
+- `output/logs/attempt_01.json`
+- `output/logs/attempt_02.json`（必要時）
 
-## 5. 改善の仕組み説明
+## 主要機能
 
-このシステムの本質は、**スコアに応じて次の生成条件を自動で変えること**です。
+1. `news_fetcher.py`
+   - API → RSS → ローカルサンプルの順でニュース取得
+   - API キー未設定でも完走
+2. `ai_extract.py`
+   - 固定 JSON を返却
+   - `Bitcoin` があれば `Satoshi Nakamoto` を補完
+   - `BlackRock` などの組織名から代表人物を補完
+3. `generate_caption.py`
+   - `claim_summary` ベース
+   - フック、短文、改行、感情ワードを追加
+   - X 向け 100〜180 文字を目安に調整
+4. `generate_image.py`
+   - 毎回新しい PNG を保存し `latest.png` を更新
+   - 人物ありは左配置 + BTC 右配置
+   - 人物画像が取れない前提でも代替ポートレートで完走
+5. `scoring.py`
+   - 変動率、話題性、人物有無でスコアリング
+6. `improver.py`
+   - `best_result.json` を参照して改善案を追加
+   - 低スコア時は訴求や人物補完を強化
 
-### 改善の流れ
-1. 生成結果を評価
-2. どの軸が弱いかを診断
-3. 問題に対応した改善戦略を適用
-4. 再生成して再評価
-5. 過去ベストより高ければ保存
+## GitHub Actions / PR運用
 
-### なぜ「放置しても精度が上がる」のか
-再学習はしませんが、毎回の評価結果から以下を自動調整するため、ループを回すほど生成条件が洗練されます。
+### Workflow 名
+- `PR Validation`
 
-- **プロンプト**: 事実重視、人物明示、キーワード固定などを追加
-- **テンプレート**: レイアウト密度や余白、フォントサイズを更新
-- **抽出戦略**: 人物抽出失敗時はフォールバックを有効化
+### 必須チェック名
+- `pipeline-smoke (ubuntu-latest)`
+- `pipeline-smoke (windows-latest)`
+- `regression-guards`
 
-### 実運用での拡張ポイント
-このサンプルはヒューリスティック実装ですが、実運用では差し替え可能です。
+### PR作成時に自動実行される内容
+- Python セットアップ
+- 依存関係インストール（`requirements.txt` / `requirements-dev.txt` がある場合のみ）
+- `python main.py --output-dir ci_output`
+- 生成物確認
+  - `ci_output/latest.png`
+  - `ci_output/latest.txt`
+  - `ci_output/best_result.json`
+- 回帰ガード
+  - long URL を含む caption 生成がハングしないこと
+  - `latest.png` / `latest.txt` / `best_result.json` の整合性確認
 
-- 投稿生成を LLM API / 画像生成 API に置換
-- 画像の視認性評価を OCR / CV モデルで強化
-- 元ネタ一致度を埋め込み類似度や NLI で強化
-- 人物抽出を NER API とルールベースの二段構えに変更
-- 閾値や重みを媒体ごとに分岐
+### Codex review 前提の運用
+- PR テンプレートに従って Codex review を依頼します。
+- Actions の必須チェックがすべて green になってから GitHub auto-merge を有効化します。
 
-## 補足
-- 本実装は**自動改善ループ**そのものを重視しています。
-- `best_result.json` は常に最高スコアの結果を保持します。
-- `logs/` には各試行の入力条件・出力・スコア・改善履歴が残るため、後から改善傾向を監査できます。
+### コードで追加した範囲
+- `.github/workflows/pr-validation.yml`
+- `.github/pull_request_template.md`
+- `tests/test_ci_guards.py`
+- `tests/verify_artifacts.py`
+- `tests/optional_pip_install.py`
+
+### GitHub 側で手動設定が必要な項目
+以下はリポジトリ設定で人手対応が必要です。
+
+1. **Branch protection rule** を対象ブランチに設定
+2. **Require a pull request before merging** を有効化
+3. **Require status checks to pass before merging** を有効化
+4. Required status checks に以下を登録
+   - `pipeline-smoke (ubuntu-latest)`
+   - `pipeline-smoke (windows-latest)`
+   - `regression-guards`
+5. 必要なら **Require approvals** を有効化し、Codex review または人間レビューを運用ルール化
+6. **Allow auto-merge** を有効化
+7. Merge strategy は **Squash merge 推奨**、履歴重視なら **Rebase merge** を許可、通常の merge commit は極力使わない
+
+### auto-merge まで有効化する具体手順
+1. GitHub で `Settings` → `General` → `Pull Requests` を開く
+2. `Allow auto-merge` を ON にする
+3. `Settings` → `Branches` → 対象ブランチの protection rule を作成/更新
+4. `Require status checks to pass before merging` を ON
+5. 上記3つのチェック名を required checks に追加
+6. 必要なら review approval 条件も設定
+7. 推奨 merge strategy を設定（`Squash merge` 推奨、必要なら `Rebase merge`）
+8. PR を作成し、Codex review を実施
+9. `PR Validation` が全 green になったら PR 画面で `Enable auto-merge` を押す
+
+## 注意
+
+- 外部通信が失敗した場合でもサンプルにフォールバックします。
+- エラー時もログを残し、停止しにくい構成にしています。
+- 画像生成は追加依存なしで動くよう、標準ライブラリのみで PNG を書き出します。
