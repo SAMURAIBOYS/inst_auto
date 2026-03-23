@@ -58,8 +58,27 @@ BITMAP_FONT: Dict[str, Sequence[str]] = {
     ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
     "/": ["00001", "00010", "00100", "01000", "10000", "00000", "00000"],
     "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
+    "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
     " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
     "▼": ["00000", "10001", "01010", "00100", "00000", "00000", "00000"],
+}
+
+MOOD_COLORS = {
+    "bullish": {
+        "accent": (68, 182, 97),
+        "coin": (255, 208, 48),
+        "change": (88, 221, 120),
+    },
+    "bearish": {
+        "accent": (216, 42, 42),
+        "coin": (255, 176, 32),
+        "change": (255, 86, 86),
+    },
+    "neutral": {
+        "accent": (242, 180, 54),
+        "coin": (255, 199, 22),
+        "change": (255, 210, 92),
+    },
 }
 
 
@@ -81,8 +100,7 @@ class ImageGenerator:
         archive_dir.mkdir(parents=True, exist_ok=True)
         unique_path = archive_dir / f"post_{now.strftime('%Y%m%dT%H%M%S%f')}.png"
         canvas = self._new_canvas(width, height, (181, 159, 166))
-        self._paint_base_reference_layout(canvas)
-        self._paint_optional_info_overlay(canvas, extraction)
+        self._paint_layout(canvas, extraction)
         png_bytes = self._encode_png(width, height, self._rows_from_canvas(canvas))
         latest_path.write_bytes(png_bytes)
         unique_path.write_bytes(png_bytes)
@@ -92,31 +110,22 @@ class ImageGenerator:
             "archive_dir": str(archive_dir),
             "width": width,
             "height": height,
-            "layout": "reference_layout",
+            "layout": "dynamic_reference_layout",
             "generated_at": timestamp,
             "contrast": 0.92,
             "font_size": 30,
             "safe_margin": 0.10,
-            "text_density": 0.12,
-            "headline_chars": min(48, len(caption) or 0),
+            "text_density": 0.24,
+            "headline_chars": min(88, len(extraction.get("headline_display", caption)) or 0),
             "overflow": False,
-            "portrait_mode": "reference_silhouette",
+            "portrait_mode": "fallback_avatar" if (extraction.get("person") or {}).get("fallback_avatar") else "named_person_card",
         }
 
     def sanitize_text(self, text: str) -> str:
-        sanitized = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
+        sanitized = re.sub(r"[^A-Za-z0-9$%,'()/:+\-\s]", " ", text or "")
         sanitized = re.sub(r"\b(?:EOF|EMERGE|DECLARAT\w*)\b", "", sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
         return sanitized
-
-    def ellipsize_text(self, text: str, scale: int, max_width: int, spacing: int = 2) -> str:
-        text = self.sanitize_text(text)
-        if self._measure_text(text, scale, spacing)[0] <= max_width:
-            return text
-        trimmed = text
-        while trimmed and self._measure_text(trimmed + "...", scale, spacing)[0] > max_width:
-            trimmed = trimmed[:-1].rstrip()
-        return (trimmed + "...") if trimmed else "..."
 
     def fit_text_to_box(self, text: str, box: TextBox, max_scale: int, min_scale: int, spacing: int = 2) -> Tuple[str, int]:
         text = self.sanitize_text(text)
@@ -129,72 +138,129 @@ class ImageGenerator:
                 return fitted, scale
         return self.ellipsize_text(text, min_scale, max_width, spacing), min_scale
 
-    def _paint_base_reference_layout(self, canvas: List[List[Color]]) -> None:
-        # background base
+    def wrap_text_to_box(self, text: str, box: TextBox, max_scale: int, min_scale: int, max_lines: int, spacing: int = 2) -> Tuple[List[str], int]:
+        words = self.sanitize_text(text).split()
+        max_width = box[2] - box[0]
+        for scale in range(max_scale, min_scale - 1, -1):
+            lines: List[str] = []
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if self._measure_text(candidate, scale, spacing)[0] <= max_width:
+                    current = candidate
+                else:
+                    if current:
+                        lines.append(current)
+                    current = word
+            if current:
+                lines.append(current)
+            if len(lines) <= max_lines:
+                return lines, scale
+        joined = " ".join(words)
+        fitted, scale = self.fit_text_to_box(joined, box, min_scale, min_scale, spacing)
+        return [fitted], scale
+
+    def ellipsize_text(self, text: str, scale: int, max_width: int, spacing: int = 2) -> str:
+        text = self.sanitize_text(text)
+        if self._measure_text(text, scale, spacing)[0] <= max_width:
+            return text
+        trimmed = text
+        while trimmed and self._measure_text(trimmed + "...", scale, spacing)[0] > max_width:
+            trimmed = trimmed[:-1].rstrip()
+        return (trimmed + "...") if trimmed else "..."
+
+    def _paint_layout(self, canvas: List[List[Color]], extraction: Dict[str, Any]) -> None:
+        person = extraction.get("person") or {}
+        market = extraction.get("market") or {}
+        direction = market.get("btc_direction", "neutral")
+        mood = MOOD_COLORS.get(direction, MOOD_COLORS["neutral"])
+        headline = extraction.get("headline_display") or extraction.get("topic") or "CRYPTO UPDATE"
+        role = person.get("role") or "MARKET PARTICIPANT"
+        summary = person.get("summary") or "HEADLINE DRIVING TODAY'S CRYPTO DISCUSSION."
+        summary = self.sanitize_text(summary.upper())
+        name = self.sanitize_text((person.get("name") or "SATOSHI NAKAMOTO").upper())
+        price_text = f"${float(market.get('btc_price', 0.0)):,.2f}" if market.get("btc_price") is not None else "$0.00"
+        change_value = float(market.get("btc_change_percent", 0.0) or 0.0)
+        change_prefix = "+" if change_value > 0 else ""
+        change_text = f"{change_prefix}{change_value:.2f}%"
+
         self._fill_rect(canvas, 0, 0, 1080, 1080, (183, 161, 168))
         self._fill_rect(canvas, 40, 40, 1040, 1040, (31, 39, 45))
-        self._fill_rect(canvas, 0, 0, 40, 1080, (26, 33, 40))
-        self._fill_rect(canvas, 0, 0, 1080, 40, (26, 33, 40))
+        self._fill_polygon(canvas, [(690, 0), (1080, 0), (1080, 445), (860, 640), (500, 640), (500, 228)], (173, 151, 158), alpha=0.90)
+        self._fill_polygon(canvas, [(0, 756), (0, 1080), (432, 1080), (560, 952), (560, 498)], (164, 145, 152), alpha=0.92)
+        self._fill_polygon(canvas, [(790, 1080), (1080, 790), (1080, 1080)], mood["accent"], alpha=0.92)
 
-        # decorative shapes kept behind panels and weakened to match reference
-        self._fill_polygon(canvas, [(670, 0), (1080, 0), (1080, 428), (866, 638), (500, 638), (500, 225)], (181, 159, 166), alpha=0.92)
-        self._fill_polygon(canvas, [(0, 755), (0, 1080), (433, 1080), (560, 955), (560, 500)], (181, 159, 166), alpha=0.92)
-        self._fill_polygon(canvas, [(795, 1080), (1080, 795), (1080, 1080)], (246, 40, 57), alpha=0.95)
-        self._fill_polygon(canvas, [(930, 520), (1080, 370), (1080, 1080), (930, 1080)], (203, 34, 50), alpha=0.72)
+        self._fill_rect(canvas, 60, 60, 1020, 220, mood["accent"])
+        self._fill_rect(canvas, 88, 88, 990, 188, (239, 236, 232))
+        self._draw_multiline_centered(canvas, (118, 110, 948, 168), headline, (28, 31, 37), max_scale=4, min_scale=2, max_lines=2, spacing=2)
 
-        # header with larger empty space, closer to reference
-        self._fill_rect(canvas, 60, 60, 1020, 188, (242, 180, 54))
-        self._fill_rect(canvas, 89, 89, 990, 157, (239, 236, 232))
+        self._fill_rect(canvas, 88, 228, 500, 950, (38, 42, 61))
+        self._draw_avatar(canvas, 294, 410, 118, person.get("fallback_avatar", False), mood["accent"])
+        self._fill_rect(canvas, 170, 540, 422, 622, (27, 35, 58))
+        self._fill_rect(canvas, 180, 640, 410, 848, (204, 208, 220))
+        self._draw_centered_text(canvas, (188, 560, 404, 600), name, (245, 245, 245), 3, 1)
+        self._draw_centered_text(canvas, (192, 650, 398, 686), role.upper(), (34, 38, 47), 2, 1)
+        self._draw_multiline_left(canvas, (196, 700, 394, 828), summary, (34, 38, 47), max_scale=2, min_scale=1, max_lines=4, spacing=1)
 
-        # left silhouette panel, larger and lower like reference
-        self._fill_rect(canvas, 89, 228, 500, 950, (38, 42, 61))
-        self._fill_circle(canvas, 295, 427, 120, (236, 205, 162))
-        self._fill_rect(canvas, 205, 520, 385, 542, (232, 235, 241))
-        self._fill_rect(canvas, 169, 539, 422, 621, (27, 35, 58))
-        self._fill_rect(canvas, 205, 620, 385, 840, (193, 198, 214))
-
-        # right BTC panel aligned to reference
         self._fill_rect(canvas, 560, 228, 990, 950, (29, 23, 18))
         self._fill_polygon(canvas, [(560, 950), (990, 950), (990, 520)], (38, 20, 18), alpha=0.55)
-        self._fill_rect(canvas, 640, 360, 902, 620, (255, 175, 32))
-        self._fill_circle(canvas, 771, 490, 120, (255, 199, 22))
-        self._draw_centered_text(canvas, (713, 455, 829, 520), "BTC", (88, 58, 0), 6, 5)
-        self._draw_centered_text(canvas, (620, 720, 770, 792), "BTC", (244, 244, 244), 7, 4)
+        self._fill_rect(canvas, 640, 330, 902, 592, mood["coin"])
+        self._fill_circle(canvas, 771, 461, 116, (255, 206, 38))
+        self._draw_centered_text(canvas, (710, 432, 832, 492), "BTC", (88, 58, 0), 6, 4)
+        self._draw_centered_text(canvas, (624, 642, 930, 708), (direction or "neutral").upper(), (244, 244, 244), 3, 2)
+        self._draw_text(canvas, 640, 760, price_text, (245, 245, 245), scale=5, spacing=2)
+        change_color = mood["change"] if change_value >= 0 else (255, 86, 86)
+        arrow = "+" if change_value >= 0 else "▼"
+        self._draw_text(canvas, 722, 826, f"{arrow}{abs(change_value):.2f}%", change_color, scale=3, spacing=1)
+        self._draw_text(canvas, 842, 826, "24H", (244, 244, 244), scale=2, spacing=1)
 
-        # alert band closer to reference: one main translucent strip and stronger bottom strip
-        self._fill_rect(canvas, 120, 890, 960, 985, (216, 42, 42), alpha=0.95)
+        self._fill_rect(canvas, 120, 890, 960, 985, mood["accent"], alpha=0.95)
         self._fill_rect(canvas, 0, 950, 1080, 1040, (198, 36, 52), alpha=0.90)
         self._fill_rect(canvas, 0, 985, 1080, 1080, (246, 40, 57), alpha=0.96)
         self._draw_centered_text(canvas, (158, 906, 434, 960), "ALERT", (255, 255, 255), 7, 4)
+        self._draw_centered_text(canvas, (474, 904, 960, 958), self._mood_banner(direction), (255, 255, 255), 3, 2)
 
-    def _paint_optional_info_overlay(self, canvas: List[List[Color]], extraction: Dict[str, Any]) -> None:
-        overlay_mode = extraction.get("overlay_mode", "minimal")
-        if overlay_mode != "expanded":
-            return
+    def _draw_avatar(self, canvas: List[List[Color]], cx: int, cy: int, radius: int, fallback: bool, accent: Color) -> None:
+        skin = (236, 205, 162) if not fallback else (207, 193, 170)
+        self._fill_circle(canvas, cx, cy, radius, skin)
+        self._fill_rect(canvas, cx - 90, cy + 112, cx + 90, cy + 134, (232, 235, 241))
+        if fallback:
+            self._fill_rect(canvas, cx - 46, cy - 6, cx + 46, cy + 10, accent)
+            self._fill_rect(canvas, cx - 18, cy - 54, cx + 18, cy + 54, accent)
+        else:
+            self._fill_rect(canvas, cx - 62, cy - 24, cx - 18, cy - 8, (58, 42, 33))
+            self._fill_rect(canvas, cx + 18, cy - 24, cx + 62, cy - 8, (58, 42, 33))
+            self._fill_rect(canvas, cx - 8, cy + 10, cx + 8, cy + 44, (112, 72, 52))
 
-        headline = self.sanitize_text(extraction.get("topic", ""))
-        person_name = self.sanitize_text((extraction.get("people") or [""])[0])
-        price_text = "$68,214.05"
-        change_text = "▼1.6% (24H)"
+    def _draw_multiline_centered(self, canvas: List[List[Color]], box: TextBox, text: str, color: Color, max_scale: int, min_scale: int, max_lines: int, spacing: int) -> None:
+        lines, scale = self.wrap_text_to_box(text, box, max_scale, min_scale, max_lines, spacing)
+        line_height = len(BITMAP_FONT["A"]) * scale + 4
+        total_height = line_height * len(lines) - 4
+        y = box[1] + max(0, ((box[3] - box[1]) - total_height) // 2)
+        for line in lines:
+            width, _ = self._measure_text(line, scale, spacing)
+            x = box[0] + max(0, ((box[2] - box[0]) - width) // 2)
+            self._draw_text(canvas, x, y, line, color, scale=scale, spacing=spacing)
+            y += line_height
 
-        if headline:
-            header_box = (110, 102, 960, 146)
-            fitted, scale = self.fit_text_to_box(headline, header_box, max_scale=3, min_scale=2, spacing=2)
-            self._draw_text(canvas, header_box[0], header_box[1], fitted, (30, 33, 40), scale=scale, spacing=2)
+    def _draw_multiline_left(self, canvas: List[List[Color]], box: TextBox, text: str, color: Color, max_scale: int, min_scale: int, max_lines: int, spacing: int) -> None:
+        lines, scale = self.wrap_text_to_box(text, box, max_scale, min_scale, max_lines, spacing)
+        line_height = len(BITMAP_FONT["A"]) * scale + 4
+        y = box[1]
+        for line in lines[:max_lines]:
+            self._draw_text(canvas, box[0], y, line, color, scale=scale, spacing=spacing)
+            y += line_height
 
-        if person_name and self._measure_text(person_name, 3, 1)[0] <= 160:
-            name_box = (188, 560, 404, 598)
-            self._fill_rect(canvas, *name_box, (243, 243, 241))
-            self._draw_centered_text(canvas, name_box, person_name, (32, 34, 40), 3, 1)
-
-        if self._measure_text(price_text, 4, 1)[0] <= 180 and self._measure_text(change_text, 2, 1)[0] <= 100:
-            price_box = (700, 820, 954, 900)
-            self._fill_rect(canvas, *price_box, (249, 249, 247))
-            self._draw_text(canvas, 720, 836, price_text, (28, 40, 66), scale=4, spacing=1)
-            self._draw_text(canvas, 792, 872, change_text, (255, 58, 44), scale=2, spacing=1)
+    @staticmethod
+    def _mood_banner(direction: str) -> str:
+        return {
+            "bullish": "BTC MOMENTUM UP",
+            "bearish": "BTC UNDER PRESSURE",
+            "neutral": "BTC ON WATCH",
+        }.get(direction, "BTC ON WATCH")
 
     def _draw_centered_text(self, canvas: List[List[Color]], box: TextBox, text: str, color: Color, max_scale: int, spacing: int) -> None:
-        fitted, scale = self.fit_text_to_box(text, box, max_scale=max_scale, min_scale=max(2, max_scale - 2), spacing=spacing)
+        fitted, scale = self.fit_text_to_box(text, box, max_scale=max_scale, min_scale=max(1, max_scale - 2), spacing=spacing)
         width, height = self._measure_text(fitted, scale, spacing)
         x = box[0] + max(0, ((box[2] - box[0]) - width) // 2)
         y = box[1] + max(0, ((box[3] - box[1]) - height) // 2)

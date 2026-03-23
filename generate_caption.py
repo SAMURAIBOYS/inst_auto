@@ -3,10 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-
 MAX_X_CAPTION_LENGTH = 180
 MIN_X_CAPTION_LENGTH = 100
-
 
 HOOKS = {
     "positive": "これヤバい🔥",
@@ -27,13 +25,19 @@ class CaptionGenerator:
         hook = HOOKS.get(sentiment, HOOKS["neutral"])
         topic = extraction.get("topic", "仮想通貨ニュース")
         claim_summary = self._compact(extraction.get("claim_summary", ""))
+        person = extraction.get("person") or {}
+        market = extraction.get("market") or {}
         source_name = article.get("source", "source")
         url = article.get("url", "")
 
+        market_line = self._market_line(market)
+        person_line = self._person_line(person)
         body_lines: List[str] = [
             hook,
-            f"{topic}",
+            topic,
             claim_summary,
+            person_line,
+            market_line,
             CTA.get(sentiment, CTA["neutral"]),
         ]
         body = "\n".join(line for line in body_lines if line)
@@ -96,6 +100,22 @@ class CaptionGenerator:
         return compact[:64]
 
     @staticmethod
+    def _person_line(person: Dict[str, Any]) -> str:
+        name = person.get("name") or "人物不明"
+        role = person.get("role") or "市場関係者"
+        return f"{name} / {role}"
+
+    @staticmethod
+    def _market_line(market: Dict[str, Any]) -> str:
+        price = market.get("btc_price")
+        change = market.get("btc_change_percent")
+        direction = market.get("btc_direction", "neutral")
+        if price is None or change is None:
+            return ""
+        mood = {"bullish": "上向き", "bearish": "下向き", "neutral": "様子見"}.get(direction, "様子見")
+        return f"BTC ${price:,.2f} / {change:+.2f}% / {mood}"
+
+    @staticmethod
     def _trim_line(text: str) -> str:
         if len(text) <= 18:
             return text
@@ -122,6 +142,6 @@ class CaptionGenerator:
 
     @staticmethod
     def _safe_fallback_caption(body_lines: List[str], source_line: str, note_line: str) -> str:
-        compact_body = body_lines[:3]
+        compact_body = body_lines[:4]
         compact_body[-1] = CaptionGenerator._trim_line(compact_body[-1])
         return "\n".join([*compact_body, source_line, note_line])

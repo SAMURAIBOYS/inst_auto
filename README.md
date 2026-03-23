@@ -113,3 +113,11 @@ python main.py
 - `archive/YYYYMMDD/post_*.png` は、各実行の画像履歴を残すための **履歴保存用** です。
 - 同じ日付フォルダには `caption_*.txt` と `result_*.json` も保存されるため、画像だけでなく投稿文と結果JSONも追跡できます。
 - そのため「2枚出力される」ように見える場合でも、役割は **latest=現在参照用 / post_*=履歴保存用** に分かれています。
+
+## 日替わり反映される要素
+
+- 記事タイトルと要約は `news_fetcher.py` の取得結果に応じて毎回変わります。
+- `ai_extract.py` は人物名だけでなく `person.name`, `person.role`, `person.summary` を組み立てます。
+- BTC価格は `fetch_market()` で取得し、`market.btc_price`, `market.btc_change_percent`, `market.btc_direction` として最終JSONへ入ります。
+- `generate_image.py` は上記データを使って、ヘッドライン・人物欄・BTC価格・変化率・市場ムード配色を日替わり表示します。
+- API失敗時でも、ニュースと市場データは日付ベースのサンプルへフォールバックし、毎日少しずつ変わる出力を維持します。

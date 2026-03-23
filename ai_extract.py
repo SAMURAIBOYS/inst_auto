@@ -4,7 +4,6 @@ import json
 import re
 from typing import Any, Dict, List
 
-
 COIN_KEYWORDS = {
     "bitcoin": "Bitcoin",
     "btc": "Bitcoin",
@@ -29,6 +28,24 @@ NON_PERSON_TERMS = {
     "Bitcoin", "Ethereum", "Solana", "XRP", "Dogecoin", "BlackRock", "Coinbase", "Binance",
     "SEC", "ETF", "ETFs", "Federal Reserve", "MicroStrategy", "Strategy", "Grayscale", "Fidelity",
     "Tether", "Circle", "Crypto", "Cryptocurrency", "Market", "Markets", "Wall Street",
+}
+
+PERSON_ROLE_MAP = {
+    "Cathie Wood": ("ARK Invest CEO", "Investor backing a strong long-term Bitcoin case."),
+    "Larry Fink": ("BlackRock CEO", "Asset-management executive steering institutional crypto adoption."),
+    "Brian Armstrong": ("Coinbase CEO", "Exchange founder commenting on crypto market structure."),
+    "Richard Teng": ("Binance CEO", "Exchange leader tied to major trading and regulation themes."),
+    "Changpeng Zhao": ("Binance founder", "High-profile crypto executive often tied to market sentiment."),
+    "Michael Saylor": ("Strategy chairman", "Corporate Bitcoin advocate pushing treasury accumulation."),
+    "Michael Sonnenshein": ("Grayscale executive", "Institutional crypto product operator tied to ETF narratives."),
+    "Abigail Johnson": ("Fidelity CEO", "Traditional-finance executive linked to digital asset expansion."),
+    "Paolo Ardoino": ("Tether CEO", "Stablecoin operator speaking on liquidity and reserves."),
+    "Jeremy Allaire": ("Circle CEO", "Stablecoin executive focused on digital-dollar adoption."),
+    "Satoshi Nakamoto": ("Bitcoin creator", "Fallback avatar used when no clear human source is extracted."),
+    "Vitalik Buterin": ("Ethereum co-founder", "Builder associated with Ethereum roadmap and adoption."),
+    "Anatoly Yakovenko": ("Solana co-founder", "Protocol builder associated with Solana network growth."),
+    "Brad Garlinghouse": ("Ripple CEO", "Executive associated with XRP and Ripple market narratives."),
+    "Elon Musk": ("Entrepreneur", "Market-moving public figure frequently tied to meme-coin sentiment."),
 }
 
 ORG_PERSON_MAP = {
@@ -60,17 +77,20 @@ class AIExtractor:
         organizations = self._detect_organizations(text)
         coins = self._detect_coins(text)
         people = self._enrich_people(self._postprocess_people(self._detect_people(text)), organizations, coins)
+        sentiment = self._detect_sentiment(text)
         claim_summary = self._build_claim_summary(article, people, organizations, coins)
         topic = self._pick_topic(article, coins)
-        sentiment = self._detect_sentiment(text)
-        image_hint = self._build_image_hint(topic, people, organizations, coins)
+        person = self._build_person(article, people, organizations, coins)
+        image_hint = self._build_image_hint(topic, person, organizations, coins, sentiment)
         payload = {
             "topic": topic,
             "people": people,
+            "person": person,
             "organizations": organizations,
             "coins": coins,
             "sentiment": sentiment,
             "claim_summary": claim_summary,
+            "headline_display": self._headline_display(article.get("title", topic)),
             "image_hint": image_hint,
         }
         return json.loads(json.dumps(payload, ensure_ascii=False))
@@ -111,6 +131,29 @@ class AIExtractor:
             enriched.append("Satoshi Nakamoto")
         return enriched[:3]
 
+    def _build_person(self, article: Dict[str, Any], people: List[str], organizations: List[str], coins: List[str]) -> Dict[str, Any]:
+        primary = people[0] if people else "Satoshi Nakamoto"
+        role, default_summary = PERSON_ROLE_MAP.get(primary, ("Market participant", "Public figure connected to the current crypto headline."))
+        if organizations and primary == "Satoshi Nakamoto":
+            org = organizations[0]
+            role = f"{org} figure"
+            default_summary = f"Fallback profile used because the article did not expose a clear individual spokesperson from {org}."
+        elif coins and primary == "Satoshi Nakamoto":
+            role = f"{coins[0]} proxy figure"
+            default_summary = f"Fallback profile used because the article centers on {coins[0]} without a clear named individual."
+        summary_source = re.sub(r"\s+", " ", article.get("summary") or article.get("title") or default_summary).strip()
+        short_summary = summary_source[:96].rstrip(" .,;")
+        if short_summary and short_summary != default_summary[:96].rstrip(" .,;"):
+            summary = short_summary
+        else:
+            summary = default_summary
+        return {
+            "name": primary,
+            "role": role,
+            "summary": summary,
+            "fallback_avatar": primary == "Satoshi Nakamoto",
+        }
+
     def _detect_organizations(self, text: str) -> List[str]:
         found = [org for org in ORG_KEYWORDS if org.lower() in text.lower()]
         return found[:5]
@@ -125,8 +168,8 @@ class AIExtractor:
 
     def _detect_sentiment(self, text: str) -> str:
         lowered = text.lower()
-        positive_markers = ["surge", "gain", "rise", "strong", "record", "boost", "breakout", "inflow"]
-        negative_markers = ["drop", "fall", "risk", "weak", "selloff", "concern", "outflow", "crash"]
+        positive_markers = ["surge", "gain", "rise", "strong", "record", "boost", "breakout", "inflow", "bull"]
+        negative_markers = ["drop", "fall", "risk", "weak", "selloff", "concern", "outflow", "crash", "bear"]
         pos = sum(marker in lowered for marker in positive_markers)
         neg = sum(marker in lowered for marker in negative_markers)
         if pos > neg:
@@ -143,13 +186,7 @@ class AIExtractor:
             return "ETF関連ニュース"
         return "仮想通貨マーケットニュース"
 
-    def _build_claim_summary(
-        self,
-        article: Dict[str, Any],
-        people: List[str],
-        organizations: List[str],
-        coins: List[str],
-    ) -> str:
+    def _build_claim_summary(self, article: Dict[str, Any], people: List[str], organizations: List[str], coins: List[str]) -> str:
         title = article.get("title", "")
         summary = article.get("summary", "")
         subject_parts = []
@@ -163,21 +200,28 @@ class AIExtractor:
         base = re.sub(r"\s+", " ", (summary or title or "最新の仮想通貨ニュース")).strip()
         return f"{subject}が注目テーマ。記事要点: {base[:130]}"
 
-    def _build_image_hint(self, topic: str, people: List[str], organizations: List[str], coins: List[str]) -> str:
-        lead_word = self._pick_buzz_word(coins)
-        if people:
-            return (
-                f"人物左配置、BTC右配置。高コントラスト背景で『{lead_word}』を大きく表示。"
-                f"人物候補は{', '.join(people[:2])}。人物画像が無ければ代替ポートレートを使う。"
-            )
-        org_hint = ", ".join(organizations[:2]) or "市場キーワード"
-        coin_hint = ", ".join(coins[:2]) or "主要コイン"
-        return f"人物なしでも映える構図。{org_hint}と{coin_hint}をカード化し、『{lead_word}』を強調。"
+    def _headline_display(self, headline: str) -> str:
+        compact = re.sub(r"[^A-Za-z0-9$%,'()/:\-\s]", " ", headline.upper())
+        compact = re.sub(r"\s+", " ", compact).strip()
+        return compact[:88]
+
+    def _build_image_hint(self, topic: str, person: Dict[str, Any], organizations: List[str], coins: List[str], sentiment: str) -> str:
+        lead_word = self._pick_buzz_word(coins, sentiment)
+        person_name = person.get("name") or "fallback avatar"
+        role = person.get("role") or "market participant"
+        org_hint = ", ".join(organizations[:2]) or "market"
+        coin_hint = ", ".join(coins[:2]) or "BTC"
+        return (
+            f"Retro pixel card with {person_name} on the left, {role} sublabel, {coin_hint} on the right, "
+            f"headline bar on top, and {lead_word} mood cues reflecting {org_hint}."
+        )
 
     @staticmethod
-    def _pick_buzz_word(coins: List[str]) -> str:
+    def _pick_buzz_word(coins: List[str], sentiment: str) -> str:
+        if sentiment == "positive":
+            return "PUMP"
+        if sentiment == "negative":
+            return "RISK"
         if "Bitcoin" in coins:
-            return "BIG MOVE"
-        if "Ethereum" in coins:
-            return "BREAKOUT"
+            return "BTC WATCH"
         return "ALERT"

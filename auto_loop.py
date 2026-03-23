@@ -19,6 +19,8 @@ from scoring import ScoringEngine
 @dataclass
 class PipelineArtifacts:
     article: Dict[str, Any]
+    person: Dict[str, Any]
+    market: Dict[str, Any]
     extraction: Dict[str, Any]
     caption: str
     image: Dict[str, Any]
@@ -31,6 +33,8 @@ class PipelineArtifacts:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "article": self.article,
+            "person": self.person,
+            "market": self.market,
             "extraction": self.extraction,
             "caption": self.caption,
             "image": self.image,
@@ -63,11 +67,14 @@ class AutoImprovementLoop:
     def run(self) -> Dict[str, Any]:
         run_errors: List[str] = []
         fetched = self.fetcher.fetch_latest()
+        market_fetch = getattr(self.fetcher, "fetch_market", None)
+        market = market_fetch() if callable(market_fetch) else {"btc_price": 65000.0, "btc_change_percent": 0.0, "btc_direction": "neutral", "source": "fallback:test_stub", "errors": []}
         article = fetched.article
         best_artifacts: PipelineArtifacts | None = None
         best_score = -1.0
         history: List[Dict[str, Any]] = []
         extraction = self.extractor.extract(article)
+        extraction["market"] = market
 
         for attempt in range(1, self.max_attempts + 1):
             improvements: List[str] = []
@@ -80,17 +87,20 @@ class AutoImprovementLoop:
                 if attempt > 1 or skipped_regeneration:
                     extraction, improve_changes = self.improver.improve(extraction, pre_score)
                     improvements.extend(improve_changes)
+                    extraction["market"] = market
 
                 caption = self.caption_generator.generate(article, extraction)
                 image = self.image_generator.generate(extraction, caption=caption)
                 final_score = self.scorer.score(article, extraction, image=image).to_dict()
                 artifacts = PipelineArtifacts(
                     article=article,
+                    person=extraction.get("person", {}),
+                    market=market,
                     extraction=extraction,
                     caption=caption,
                     image=image,
                     fetch_mode=fetched.mode,
-                    fetch_errors=fetched.errors + run_errors,
+                    fetch_errors=fetched.errors + market.get("errors", []) + run_errors,
                     score=final_score,
                     improvements=improvements,
                     skipped_regeneration=skipped_regeneration,
@@ -98,23 +108,19 @@ class AutoImprovementLoop:
             except Exception as exc:  # noqa: BLE001
                 run_errors.append(f"attempt_{attempt}_failed: {exc}")
                 run_errors.append(traceback.format_exc(limit=2))
-                caption = self._fallback_caption(article)
-                image = self.image_generator.generate({
-                    "topic": "CRYPTO ALERT",
-                    "people": ["Satoshi Nakamoto"],
-                    "organizations": [],
-                    "coins": ["Bitcoin"],
-                    "sentiment": "neutral",
-                    "claim_summary": article.get("title", "Fallback summary"),
-                    "image_hint": "fallback image",
-                }, caption=caption)
+                extraction = self.extractor.extract(article)
+                extraction["market"] = market
+                caption = self._fallback_caption(article, market)
+                image = self.image_generator.generate(extraction, caption=caption)
                 artifacts = PipelineArtifacts(
                     article=article,
+                    person=extraction.get("person", {}),
+                    market=market,
                     extraction=extraction,
                     caption=caption,
                     image=image,
                     fetch_mode=fetched.mode,
-                    fetch_errors=fetched.errors + run_errors,
+                    fetch_errors=fetched.errors + market.get("errors", []) + run_errors,
                     score={"total_score": 0.0, "should_generate": True, "diagnostics": {}},
                     improvements=["exception fallback executed"],
                     skipped_regeneration=False,
@@ -137,6 +143,7 @@ class AutoImprovementLoop:
                 break
 
             extraction, improve_changes = self.improver.improve(extraction, artifacts.score)
+            extraction["market"] = market
             if best_artifacts:
                 best_artifacts.improvements.extend(change for change in improve_changes if change not in best_artifacts.improvements)
 
@@ -145,6 +152,20 @@ class AutoImprovementLoop:
         self.latest_text_path.write_text(best_artifacts.caption, encoding="utf-8")
         payload = {
             "generated_at": self._timestamp(),
+            "person": best_artifacts.person,
+            "article": {
+                "title": best_artifacts.article.get("title", ""),
+                "summary": best_artifacts.article.get("summary", ""),
+                "url": best_artifacts.article.get("url", ""),
+                "source": best_artifacts.article.get("source", ""),
+                "published_at": best_artifacts.article.get("published_at", ""),
+            },
+            "market": {
+                "btc_price": best_artifacts.market.get("btc_price"),
+                "btc_change_percent": best_artifacts.market.get("btc_change_percent"),
+                "btc_direction": best_artifacts.market.get("btc_direction"),
+                "source": best_artifacts.market.get("source"),
+            },
             "result": best_artifacts.to_dict(),
             "history_length": len(history),
         }
@@ -156,12 +177,14 @@ class AutoImprovementLoop:
             "latest_text_path": str(self.latest_text_path),
             "latest_image_path": best_artifacts.image.get("latest_path"),
             "fetch_mode": fetched.mode,
-            "fetch_errors": fetched.errors + run_errors,
+            "fetch_errors": fetched.errors + market.get("errors", []) + run_errors,
+            "person": payload["person"],
+            "article": payload["article"],
+            "market": payload["market"],
             "result": best_artifacts.to_dict(),
             "history_length": len(history),
             "archive": archive_paths,
         }
-
 
     def _archive_final_outputs(self, artifacts: PipelineArtifacts, payload: Dict[str, Any]) -> Dict[str, str]:
         generated_at = artifacts.image.get("generated_at") or self._timestamp()
@@ -171,8 +194,9 @@ class AutoImprovementLoop:
             stamp = datetime.now(timezone.utc)
         archive_dir = self.archive_root / stamp.strftime("%Y%m%d")
         archive_dir.mkdir(parents=True, exist_ok=True)
-        caption_path = archive_dir / f"caption_{stamp.strftime('%Y%m%dT%H%M%S%f')}.txt"
-        result_path = archive_dir / f"result_{stamp.strftime('%Y%m%dT%H%M%S%f')}.json"
+        suffix = stamp.strftime('%Y%m%dT%H%M%S%f')
+        caption_path = archive_dir / f"caption_{suffix}.txt"
+        result_path = archive_dir / f"result_{suffix}.json"
         caption_path.write_text(artifacts.caption, encoding="utf-8")
         self._write_json(result_path, payload)
         artifacts.image["archive_dir"] = str(archive_dir)
@@ -183,10 +207,13 @@ class AutoImprovementLoop:
         }
 
     @staticmethod
-    def _fallback_caption(article: Dict[str, Any]) -> str:
+    def _fallback_caption(article: Dict[str, Any], market: Dict[str, Any]) -> str:
         source = article.get("source", "source")
         url = article.get("url", "")
-        return f"これヤバい⚠️\n速報を整理中\n{article.get('title', 'Crypto alert')}\n出典: {source} {url}\n※要約ベース。投資判断は自己責任。"
+        market_line = ""
+        if market.get("btc_price") is not None and market.get("btc_change_percent") is not None:
+            market_line = f"\nBTC ${market['btc_price']:,.2f} / {market['btc_change_percent']:+.2f}%"
+        return f"これヤバい⚠️\n速報を整理中\n{article.get('title', 'Crypto alert')}{market_line}\n出典: {source} {url}\n※要約ベース。投資判断は自己責任。"
 
     @staticmethod
     def _write_json(path: Path, payload: Dict[str, Any]) -> None:

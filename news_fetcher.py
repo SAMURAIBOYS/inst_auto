@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import ssl
-import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -11,8 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List
 
 DEFAULT_SAMPLE_NEWS: List[Dict[str, Any]] = [
     {
@@ -33,6 +31,7 @@ DEFAULT_SAMPLE_NEWS: List[Dict[str, Any]] = [
 
 CRYPTO_PANIC_URL = "https://cryptopanic.com/api/v1/posts/?public=true&kind=news&currencies=BTC,ETH,SOL,XRP"
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?{query}"
+COINGECKO_BTC_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
 
 
 @dataclass
@@ -64,6 +63,26 @@ class NewsFetcher:
 
         article = self._load_local_sample()
         return FetchResult(article=article, mode="sample", errors=errors)
+
+    def fetch_market(self) -> Dict[str, Any]:
+        errors: List[str] = []
+        try:
+            payload = self._read_json(COINGECKO_BTC_URL)
+            btc = payload.get("bitcoin") or {}
+            price = float(btc.get("usd"))
+            change = float(btc.get("usd_24h_change"))
+            return {
+                "btc_price": round(price, 2),
+                "btc_change_percent": round(change, 2),
+                "btc_direction": self._direction(change),
+                "source": "api:coingecko",
+                "errors": errors,
+            }
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"market_api_failed: {exc}")
+            sample = self._sample_market()
+            sample["errors"] = errors
+            return sample
 
     def _fetch_from_api(self) -> Dict[str, Any]:
         token = os.getenv("CRYPTOPANIC_API_TOKEN") or os.getenv("NEWS_API_TOKEN")
@@ -117,10 +136,24 @@ class NewsFetcher:
             with self.sample_path.open("r", encoding="utf-8") as fp:
                 data = json.load(fp)
             if isinstance(data, list) and data:
-                return data[0]
+                day_index = datetime.now(timezone.utc).timetuple().tm_yday % len(data)
+                return data[day_index]
             if isinstance(data, dict):
                 return data
-        return DEFAULT_SAMPLE_NEWS[0].copy()
+        day_index = datetime.now(timezone.utc).timetuple().tm_yday % len(DEFAULT_SAMPLE_NEWS)
+        return DEFAULT_SAMPLE_NEWS[day_index].copy()
+
+    def _sample_market(self) -> Dict[str, Any]:
+        today = datetime.now(timezone.utc)
+        day_seed = today.year * 1000 + today.timetuple().tm_yday
+        price = 62000 + (day_seed % 9000) + ((day_seed % 100) / 100)
+        change = ((day_seed % 17) - 8) * 0.7
+        return {
+            "btc_price": round(price, 2),
+            "btc_change_percent": round(change, 2),
+            "btc_direction": self._direction(change),
+            "source": "sample:daily_market",
+        }
 
     def _read_json(self, url: str) -> Dict[str, Any]:
         with urllib.request.urlopen(self._build_request(url), timeout=self.timeout, context=self._ssl_context()) as response:
@@ -141,3 +174,11 @@ class NewsFetcher:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _direction(change: float) -> str:
+        if change > 0.2:
+            return "bullish"
+        if change < -0.2:
+            return "bearish"
+        return "neutral"
