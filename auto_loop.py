@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -138,13 +139,14 @@ class AutoImprovementLoop:
                 best_artifacts.improvements.extend(change for change in improve_changes if change not in best_artifacts.improvements)
 
         assert best_artifacts is not None
+        self._restore_latest_image(best_artifacts)
+        self.latest_text_path.write_text(best_artifacts.caption, encoding="utf-8")
         payload = {
             "generated_at": self._timestamp(),
             "result": best_artifacts.to_dict(),
             "history_length": len(history),
         }
         self._write_json(self.best_result_path, payload)
-        self.latest_text_path.write_text(best_artifacts.caption, encoding="utf-8")
         return {
             "best_result_path": str(self.best_result_path),
             "latest_text_path": str(self.latest_text_path),
@@ -169,3 +171,13 @@ class AutoImprovementLoop:
     @staticmethod
     def _timestamp() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _restore_latest_image(self, artifacts: PipelineArtifacts) -> None:
+        winning_image = Path(artifacts.image.get("path", ""))
+        latest_image = Path(artifacts.image.get("latest_path", self.output_dir / "latest.png"))
+        if not winning_image.exists():
+            return
+        latest_image.parent.mkdir(parents=True, exist_ok=True)
+        if winning_image.resolve() != latest_image.resolve():
+            shutil.copyfile(winning_image, latest_image)
+        artifacts.image["latest_path"] = str(latest_image)
