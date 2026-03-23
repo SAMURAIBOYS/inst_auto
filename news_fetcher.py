@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_SAMPLE_NEWS: List[Dict[str, Any]] = [
     {
-        "title": "Bitcoin ETF flows remain in focus as institutions watch macro signals",
-        "summary": "Analysts say Bitcoin exchange-traded fund flows and broader macro signals remain key drivers for short-term sentiment in the crypto market.",
-        "url": "https://example.local/sample-bitcoin-etf",
-        "published_at": "2026-01-15T09:00:00+00:00",
+        "title": "Cathie Wood urges investors to sell gold for Bitcoin, says BTC will hit $1,500,000",
+        "summary": "Cathie Wood says investors should move from gold into Bitcoin and argues BTC could eventually reach 1.5 million dollars as institutional adoption expands.",
+        "url": "https://example.local/sample-cathie-wood-bitcoin",
+        "published_at": "2026-03-23T02:29:32+00:00",
         "source": "local_sample",
     },
     {

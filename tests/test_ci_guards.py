@@ -97,5 +97,20 @@ class LatestArtifactConsistencyTests(unittest.TestCase):
         self.assertEqual(saved["result"]["image"]["latest_path"], str(latest_path))
 
 
+class ImageLayoutGuardTests(unittest.TestCase):
+    def test_generated_image_has_expected_master_layout(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="insta_auto_layout_"))
+        self.addCleanup(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
+        loop = AutoImprovementLoop(output_dir=temp_dir, max_attempts=1)
+        result = loop.run()
+        latest_path = Path(result["latest_image_path"])
+        data = latest_path.read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        width = int.from_bytes(data[16:20], "big")
+        height = int.from_bytes(data[20:24], "big")
+        self.assertEqual((width, height), (1080, 1080))
+
+
+
 if __name__ == "__main__":
     unittest.main()
