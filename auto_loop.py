@@ -50,10 +50,12 @@ class AutoImprovementLoop:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.best_result_path = self.output_dir / "best_result.json"
         self.latest_text_path = self.output_dir / "latest.txt"
+        self.archive_root = self.output_dir.parent / "archive" if self.output_dir.name == "output" else self.output_dir / "archive"
+        self.archive_root.mkdir(parents=True, exist_ok=True)
         self.fetcher = NewsFetcher(sample_path=self.output_dir / "sample_news.json")
         self.extractor = AIExtractor()
         self.caption_generator = CaptionGenerator()
-        self.image_generator = ImageGenerator(output_dir=self.output_dir)
+        self.image_generator = ImageGenerator(output_dir=self.output_dir, archive_root=self.archive_root)
         self.scorer = ScoringEngine()
         self.improver = ImprovementEngine(best_result_path=self.best_result_path)
         self.max_attempts = max_attempts
@@ -79,6 +81,9 @@ class AutoImprovementLoop:
                     extraction, improve_changes = self.improver.improve(extraction, pre_score)
                     improvements.extend(improve_changes)
 
+                extraction["article_title"] = article.get("title", "")
+                extraction["article_summary"] = article.get("summary", "")
+                extraction["market"] = article.get("market", extraction.get("market", {}))
                 caption = self.caption_generator.generate(article, extraction)
                 image = self.image_generator.generate(extraction, caption=caption)
                 final_score = self.scorer.score(article, extraction, image=image).to_dict()
@@ -99,12 +104,17 @@ class AutoImprovementLoop:
                 caption = self._fallback_caption(article)
                 image = self.image_generator.generate({
                     "topic": "CRYPTO ALERT",
+                    "headline": article.get("title", "CRYPTO ALERT"),
+                    "person": {"name": "Market Watch", "role": "Fallback Avatar", "summary": "主要人物が不明なため市場アバターを表示。", "avatar_mode": "fallback"},
                     "people": ["Satoshi Nakamoto"],
                     "organizations": [],
                     "coins": ["Bitcoin"],
                     "sentiment": "neutral",
                     "claim_summary": article.get("title", "Fallback summary"),
                     "image_hint": "fallback image",
+                    "article_title": article.get("title", ""),
+                    "article_summary": article.get("summary", ""),
+                    "market": article.get("market", {}),
                 }, caption=caption)
                 artifacts = PipelineArtifacts(
                     article=article,
@@ -146,6 +156,8 @@ class AutoImprovementLoop:
             "result": best_artifacts.to_dict(),
             "history_length": len(history),
         }
+        archive_paths = self._archive_final_outputs(best_artifacts, payload)
+        payload["archive"] = archive_paths
         self._write_json(self.best_result_path, payload)
         return {
             "best_result_path": str(self.best_result_path),
@@ -155,6 +167,27 @@ class AutoImprovementLoop:
             "fetch_errors": fetched.errors + run_errors,
             "result": best_artifacts.to_dict(),
             "history_length": len(history),
+            "archive": archive_paths,
+        }
+
+
+    def _archive_final_outputs(self, artifacts: PipelineArtifacts, payload: Dict[str, Any]) -> Dict[str, str]:
+        generated_at = artifacts.image.get("generated_at") or self._timestamp()
+        try:
+            stamp = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        except ValueError:
+            stamp = datetime.now(timezone.utc)
+        archive_dir = self.archive_root / stamp.strftime("%Y%m%d")
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        caption_path = archive_dir / f"caption_{stamp.strftime('%Y%m%dT%H%M%S%f')}.txt"
+        result_path = archive_dir / f"result_{stamp.strftime('%Y%m%dT%H%M%S%f')}.json"
+        caption_path.write_text(artifacts.caption, encoding="utf-8")
+        self._write_json(result_path, payload)
+        artifacts.image["archive_dir"] = str(archive_dir)
+        return {
+            "image": artifacts.image.get("path", ""),
+            "caption": str(caption_path),
+            "result": str(result_path),
         }
 
     @staticmethod

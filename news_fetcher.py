@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import ssl
-import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -11,8 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List
 
 DEFAULT_SAMPLE_NEWS: List[Dict[str, Any]] = [
     {
@@ -31,8 +29,15 @@ DEFAULT_SAMPLE_NEWS: List[Dict[str, Any]] = [
     },
 ]
 
+DEFAULT_MARKET_SAMPLES: List[Dict[str, Any]] = [
+    {"btc_price": 68214.05, "btc_change_percent": -1.6, "btc_direction": "down"},
+    {"btc_price": 70488.12, "btc_change_percent": 2.4, "btc_direction": "up"},
+    {"btc_price": 69105.44, "btc_change_percent": 0.2, "btc_direction": "neutral"},
+]
+
 CRYPTO_PANIC_URL = "https://cryptopanic.com/api/v1/posts/?public=true&kind=news&currencies=BTC,ETH,SOL,XRP"
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?{query}"
+COINGECKO_BTC_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
 
 
 @dataclass
@@ -52,17 +57,20 @@ class NewsFetcher:
 
         try:
             article = self._fetch_from_api()
+            article["market"] = self._fetch_market_data(errors, article)
             return FetchResult(article=article, mode="api", errors=errors)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"api_failed: {exc}")
 
         try:
             article = self._fetch_from_rss()
+            article["market"] = self._fetch_market_data(errors, article)
             return FetchResult(article=article, mode="rss", errors=errors)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"rss_failed: {exc}")
 
         article = self._load_local_sample()
+        article["market"] = self._fetch_market_data(errors, article)
         return FetchResult(article=article, mode="sample", errors=errors)
 
     def _fetch_from_api(self) -> Dict[str, Any]:
@@ -112,15 +120,43 @@ class NewsFetcher:
             "source": "rss:google_news",
         }
 
+    def _fetch_market_data(self, errors: List[str], article: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            payload = self._read_json(COINGECKO_BTC_URL)
+            btc = payload.get("bitcoin") or {}
+            price = round(float(btc.get("usd")), 2)
+            change = round(float(btc.get("usd_24h_change")), 2)
+            return {
+                "btc_price": price,
+                "btc_change_percent": change,
+                "btc_direction": self._direction_from_change(change),
+            }
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"market_failed: {exc}")
+            return self._fallback_market(article)
+
+    def _fallback_market(self, article: Dict[str, Any]) -> Dict[str, Any]:
+        published = article.get("published_at") or self._now_iso()
+        try:
+            stamp = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            index = stamp.toordinal() % len(DEFAULT_MARKET_SAMPLES)
+        except ValueError:
+            index = 0
+        return DEFAULT_MARKET_SAMPLES[index].copy()
+
     def _load_local_sample(self) -> Dict[str, Any]:
         if self.sample_path and self.sample_path.exists():
             with self.sample_path.open("r", encoding="utf-8") as fp:
                 data = json.load(fp)
             if isinstance(data, list) and data:
-                return data[0]
-            if isinstance(data, dict):
-                return data
-        return DEFAULT_SAMPLE_NEWS[0].copy()
+                article = data[0]
+            elif isinstance(data, dict):
+                article = data
+            else:
+                article = DEFAULT_SAMPLE_NEWS[0].copy()
+            article.setdefault("published_at", self._now_iso())
+            return article
+        return DEFAULT_SAMPLE_NEWS[datetime.now(timezone.utc).toordinal() % len(DEFAULT_SAMPLE_NEWS)].copy()
 
     def _read_json(self, url: str) -> Dict[str, Any]:
         with urllib.request.urlopen(self._build_request(url), timeout=self.timeout, context=self._ssl_context()) as response:
@@ -141,3 +177,11 @@ class NewsFetcher:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _direction_from_change(change: float) -> str:
+        if change > 0.3:
+            return "up"
+        if change < -0.3:
+            return "down"
+        return "neutral"

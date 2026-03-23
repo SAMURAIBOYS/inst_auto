@@ -13,6 +13,9 @@ python main.py
 - `output/latest.png`
 - `output/latest.txt`
 - `output/best_result.json`
+- `archive/YYYYMMDD/post_*.png`
+- `archive/YYYYMMDD/caption_*.txt`
+- `archive/YYYYMMDD/result_*.json`
 - `output/logs/attempt_01.json`
 - `output/logs/attempt_02.json`（必要時）
 
@@ -30,7 +33,8 @@ python main.py
    - フック、短文、改行、感情ワードを追加
    - X 向け 100〜180 文字を目安に調整
 4. `generate_image.py`
-   - 毎回新しい PNG を保存し `latest.png` を更新
+   - `output/latest.png` は常に最新固定名として更新
+   - 履歴画像は `archive/YYYYMMDD/post_*.png` に保存
    - 人物ありは左配置 + BTC 右配置
    - 人物画像が取れない前提でも代替ポートレートで完走
 5. `scoring.py`
@@ -102,3 +106,17 @@ python main.py
 - 外部通信が失敗した場合でもサンプルにフォールバックします。
 - エラー時もログを残し、停止しにくい構成にしています。
 - 画像生成は追加依存なしで動くよう、標準ライブラリのみで PNG を書き出します。
+
+## 出力保存の考え方
+
+- `output/latest.png` / `output/latest.txt` / `output/best_result.json` は、外部連携や目視確認向けの **最新固定名** です。
+- `archive/YYYYMMDD/post_*.png` は、各実行の画像履歴を残すための **履歴保存用** です。
+- 同じ日付フォルダには `caption_*.txt` と `result_*.json` も保存されるため、画像だけでなく投稿文と結果JSONも追跡できます。
+- そのため「2枚出力される」ように見える場合でも、役割は **latest=現在参照用 / post_*=履歴保存用** に分かれています。
+
+## 日替わり化した要素
+
+- `news_fetcher.py` はその日のニュース記事に加えて BTC 価格/24時間変化率も取得し、失敗時はサンプルへフォールバックします。
+- `ai_extract.py` は `person.name`, `person.role`, `person.summary` を含む人物プロフィールを生成します。
+- `main.py` の最終JSONには `person`, `article`, `market` の要約フィールドが追加されます。
+- `generate_image.py` は日ごとの記事内容に応じて、ヘッドライン、人物名、人物説明、BTC価格、BTC変化率、市場ムード配色を更新します。

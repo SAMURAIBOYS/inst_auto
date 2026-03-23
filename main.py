@@ -28,6 +28,27 @@ def main() -> None:
 
     loop = AutoImprovementLoop(output_dir=args.output_dir)
     result = loop.run()
+    artifacts = result.get("result", {})
+    extraction = artifacts.get("extraction", {})
+    article = artifacts.get("article", {})
+    person = extraction.get("person", {})
+    market = extraction.get("market") or article.get("market", {})
+    result.update({
+        "person": {
+            "name": person.get("name", ""),
+            "role": person.get("role", ""),
+            "summary": person.get("summary", ""),
+        },
+        "article": {
+            "title": article.get("title", ""),
+            "summary": article.get("summary", ""),
+        },
+        "market": {
+            "btc_price": market.get("btc_price"),
+            "btc_change_percent": market.get("btc_change_percent"),
+            "btc_direction": market.get("btc_direction"),
+        },
+    })
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
